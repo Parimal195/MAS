@@ -3,13 +3,14 @@ from xhtml2pdf import pisa
 import os
 from datetime import datetime
 
-def markdown_to_pdf(markdown_content: str, output_folder: str = "reports") -> str:
+def markdown_to_pdf(markdown_content: str, output_folder: str = "reports", is_manual: bool = False) -> str:
     """Converts a markdown string to a PDF format and saves it to the output folder."""
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
         
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = os.path.join(output_folder, f"SPECTER_intel_report_{timestamp}.pdf")
+    date_str = datetime.now().strftime("%d-%m-%y")
+    prefix = "instant-report" if is_manual else "report"
+    output_filename = os.path.join(output_folder, f"{prefix}-{date_str}.pdf")
     
     css = """
     @page {

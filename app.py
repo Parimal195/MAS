@@ -196,18 +196,20 @@ with tab_dashboard:
                 if not API_KEY:
                     st.error("Cannot execute without Gemini API Key.")
                     st.session_state.is_running = False
+                    st.stop() # Immediately halts execution so the user can see the error
                 else:
                     agent = StreamIntelAgent(api_key=API_KEY, tavily_api_key=TAVILY_API_KEY)
                     try:
                         report_md = agent.generate_report(st.session_state.keywords, engine=st.session_state.engine_choice)
                         st.session_state.last_report = report_md
-                        pdf_path = markdown_to_pdf(report_md)
+                        pdf_path = markdown_to_pdf(report_md, is_manual=True)
                         st.session_state.last_pdf = pdf_path
                         st.session_state.is_running = False # Reset
                         st.rerun() # Final rerun to show success state
                     except Exception as e:
                         st.error(f"Error during intelligence sweep: {e}")
                         st.session_state.is_running = False
+                        st.stop() # Halts execution and keeps error visible
 
     with col_report:
         if st.session_state.is_running:
