@@ -1,0 +1,11 @@
+google-genai>=0.1.0
+python-dotenv>=1.0.1
+pydantic>=2.7.0
+tavily-python>=0.3.0
+duckduckgo-search>=5.0.0
+schedule>=1.2.1
+streamlit>=1.33.0
+markdown>=3.6
+xhtml2pdf>=0.2.15
+PyGithub>=2.2.0
+pytz>=2024.1
