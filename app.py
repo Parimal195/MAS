@@ -169,7 +169,7 @@ def push_report_to_github(pat, repo_name, local_pdf_path):
 
 # --- UI TABS ---
 
-tab_input, tab_dashboard, tab_settings = st.tabs(["🎛️ Online Configuration", "⚡ Manual Sweep", "⚙️ Connection Logic"])
+tab_input, tab_dashboard = st.tabs(["🎛️ Online Configuration", "⚡ Manual Sweep"])
 
 with tab_input:
     st.markdown("### ☁️ Cloud Persistence Engine")
@@ -319,24 +319,4 @@ with tab_dashboard:
         else:
             st.info("No compiled dashboard intel. Wait for backend Github Agent or trigger manually.")
 
-with tab_settings:
-    st.subheader("GitHub Connection Logistics")
-    st.info("Security model upgraded. Connection details (PAT and Repository) are now securely loaded from your environment secrets.")
-    
-    st.divider()
-    st.subheader("🚀 Deploy Local Codebase to Production")
-    st.markdown("Commit and push the **entire codebase** directly from this application terminal/dashboard.")
-    commit_msg = st.text_input("Commit Message", value="Update Specter Intelligence Agent codebase")
-    
-    if st.button("📦 Deploy Codebase to GitHub", type="primary", use_container_width=True):
-        if not is_authenticated:
-             st.error("Invalid Admin Password. Access Denied.")
-        elif not GITHUB_PAT or not GITHUB_REPO:
-            st.error("Missing GitHub Backend credentials.")
-        else:
-            with st.spinner("Scanning and pushing local files to production repository..."):
-                success, message = push_codebase_to_github(GITHUB_PAT, GITHUB_REPO, commit_msg)
-                if success:
-                    st.success(message)
-                else:
-                    st.error(f"Failed to deploy code: {message}")
+
