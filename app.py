@@ -37,6 +37,11 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "specter") # default simple passwo
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 
+col_pwd, _ = st.columns([1, 2])
+with col_pwd:
+    admin_pwd = st.text_input("Admin Password 🔐 (Required for internal modifications/pushes)", type="password")
+is_authenticated = (admin_pwd == APP_PASSWORD)
+
 # Session state initialization
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
@@ -163,8 +168,6 @@ def push_report_to_github(pat, repo_name, local_pdf_path):
         return False
 
 # --- UI TABS ---
-admin_pwd = st.sidebar.text_input("Admin Password 🔐", type="password")
-is_authenticated = (admin_pwd == APP_PASSWORD)
 
 tab_input, tab_dashboard, tab_settings = st.tabs(["🎛️ Online Configuration", "⚡ Manual Sweep", "⚙️ Connection Logic"])
 
