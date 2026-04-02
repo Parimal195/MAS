@@ -3,7 +3,7 @@ name: Daily Specter Intelligence Sweep
 on:
   schedule:
     # Runs at 12:00 PM UTC every day. Change this if you prefer a different time.
-    - cron: '30 2 * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch:
     # Allows you to run this workflow manually from the Actions tab
 
