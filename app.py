@@ -163,9 +163,9 @@ def push_report_to_github(pat, repo_name, local_pdf_path):
             
         commit_message = f"docs: Automated Manual Agent Scan {os.path.basename(local_pdf_path)}"
         repo.create_file(remote_path, commit_message, content)
-        return True
+        return True, "Success"
     except Exception as e:
-        return False
+        return False, str(e)
 
 # --- UI TABS ---
 
@@ -287,8 +287,11 @@ with tab_dashboard:
                         pdf_path = markdown_to_pdf(report_md, is_manual=True)
                         st.session_state.last_pdf = pdf_path
                         if is_authenticated and GITHUB_PAT and GITHUB_REPO:
-                             if push_report_to_github(GITHUB_PAT, GITHUB_REPO, pdf_path):
+                             success, msg = push_report_to_github(GITHUB_PAT, GITHUB_REPO, pdf_path)
+                             if success:
                                  st.session_state.pushed_success = True
+                             else:
+                                 st.error(f"Cloud Push Failed: {msg}")
                         st.session_state.is_running = False # Reset
                         st.rerun() # Final rerun to show success state
                     except Exception as e:
