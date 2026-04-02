@@ -32,13 +32,14 @@ with col_status:
 
 st.divider()
 
+# Core logic securely grabbed from env (Never printed to UI)
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "specter") # default simple password
+GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
+
 # Session state initialization
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
-if 'github_pat' not in st.session_state:
-    st.session_state.github_pat = os.environ.get("GITHUB_PAT", "")
-if 'github_repo' not in st.session_state:
-    st.session_state.github_repo = os.environ.get("GITHUB_REPO", "") # e.g. username/repo
 if 'keywords' not in st.session_state:
     # Try local load
     try:
@@ -147,7 +148,24 @@ def push_codebase_to_github(pat, repo_name, commit_message="Update codebase"):
     except Exception as e:
         return False, str(e)
 
+def push_report_to_github(pat, repo_name, local_pdf_path):
+    try:
+        g = Github(pat)
+        repo = g.get_repo(repo_name)
+        remote_path = local_pdf_path.replace("\\", "/") # e.g. reports/instant-report...
+        with open(local_pdf_path, "rb") as f:
+            content = f.read()
+            
+        commit_message = f"docs: Automated Manual Agent Scan {os.path.basename(local_pdf_path)}"
+        repo.create_file(remote_path, commit_message, content)
+        return True
+    except Exception as e:
+        return False
+
 # --- UI TABS ---
+admin_pwd = st.sidebar.text_input("Admin Password 🔐", type="password")
+is_authenticated = (admin_pwd == APP_PASSWORD)
+
 tab_input, tab_dashboard, tab_settings = st.tabs(["🎛️ Online Configuration", "⚡ Manual Sweep", "⚙️ Connection Logic"])
 
 with tab_input:
@@ -201,14 +219,16 @@ with tab_input:
     st.divider()
     
     if st.button("💾 DEPLOY CONFIGURATION TO GITHUB", type="primary", use_container_width=True):
-        if not st.session_state.github_pat or not st.session_state.github_repo:
-            st.error("Missing GitHub configuration! Go to the 'Connection Logic' tab to lock in your repository.")
+        if not is_authenticated:
+            st.error("Invalid Admin Password. Access Denied.")
+        elif not GITHUB_PAT or not GITHUB_REPO:
+            st.error("Missing Backend Secrets (GITHUB_PAT/GITHUB_REPO) configuration.")
         else:
             with st.spinner("Connecting to GitHub API and injecting updates into your online repository..."):
                 cron_utc = get_utc_cron_string(schedule_time, time_zone)
                 success = update_github_online(
-                    st.session_state.github_pat, 
-                    st.session_state.github_repo, 
+                    GITHUB_PAT, 
+                    GITHUB_REPO, 
                     parsed_keywords, 
                     enable_scheduler, 
                     cron_utc,
@@ -263,6 +283,9 @@ with tab_dashboard:
                         st.session_state.last_report = report_md
                         pdf_path = markdown_to_pdf(report_md, is_manual=True)
                         st.session_state.last_pdf = pdf_path
+                        if is_authenticated and GITHUB_PAT and GITHUB_REPO:
+                             if push_report_to_github(GITHUB_PAT, GITHUB_REPO, pdf_path):
+                                 st.session_state.pushed_success = True
                         st.session_state.is_running = False # Reset
                         st.rerun() # Final rerun to show success state
                     except Exception as e:
@@ -276,6 +299,8 @@ with tab_dashboard:
             
         elif 'last_report' in st.session_state:
             st.success("Intelligence compiled successfully.")
+            if st.session_state.get('pushed_success'):
+                 st.info("☁️ Automatically pushed report to GitHub!")
             if 'last_pdf' in st.session_state and os.path.exists(st.session_state.last_pdf):
                 with open(st.session_state.last_pdf, "rb") as f:
                     st.download_button(
@@ -293,35 +318,21 @@ with tab_dashboard:
 
 with tab_settings:
     st.subheader("GitHub Connection Logistics")
+    st.info("Security model upgraded. Connection details (PAT and Repository) are now securely loaded from your environment secrets.")
     
-    st.text_input("GitHub Personal Access Token (PAT)", 
-                  type="password", 
-                  value=st.session_state.github_pat, 
-                  key="pat_input",
-                  help="Needs read/write access to code so it can update your daily cron schedule.")
-    
-    st.text_input("GitHub Repository Path", 
-                  placeholder="e.g. JohnDoe/StreamintelAgent", 
-                  value=st.session_state.github_repo, 
-                  key="repo_input",
-                  help="The repository containing your Specter deployment.")
-                  
-    if st.button("Link Credentials Locally"):
-        st.session_state.github_pat = st.session_state.pat_input
-        st.session_state.github_repo = st.session_state.repo_input
-        st.success("Session configured. Now you can use 'Deploy Configuration' safely.")
-        
     st.divider()
     st.subheader("🚀 Deploy Local Codebase to Production")
     st.markdown("Commit and push the **entire codebase** directly from this application terminal/dashboard.")
     commit_msg = st.text_input("Commit Message", value="Update Specter Intelligence Agent codebase")
     
     if st.button("📦 Deploy Codebase to GitHub", type="primary", use_container_width=True):
-        if not st.session_state.github_pat or not st.session_state.github_repo:
-            st.error("Missing GitHub credentials. Please link them above.")
+        if not is_authenticated:
+             st.error("Invalid Admin Password. Access Denied.")
+        elif not GITHUB_PAT or not GITHUB_REPO:
+            st.error("Missing GitHub Backend credentials.")
         else:
             with st.spinner("Scanning and pushing local files to production repository..."):
-                success, message = push_codebase_to_github(st.session_state.github_pat, st.session_state.github_repo, commit_msg)
+                success, message = push_codebase_to_github(GITHUB_PAT, GITHUB_REPO, commit_msg)
                 if success:
                     st.success(message)
                 else:

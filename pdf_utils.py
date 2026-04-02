@@ -8,8 +8,12 @@ def markdown_to_pdf(markdown_content: str, output_folder: str = "reports", is_ma
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
         
-    date_str = datetime.now().strftime("%d-%m-%y")
-    prefix = "instant-report" if is_manual else "report"
+    if is_manual:
+        date_str = datetime.now().strftime("%d-%m-%y-%H%M%S")
+        prefix = "instant-report"
+    else:
+        date_str = datetime.now().strftime("%d-%m-%y")
+        prefix = "report"
     output_filename = os.path.join(output_folder, f"{prefix}-{date_str}.pdf")
     
     css = """
