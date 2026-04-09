@@ -9,8 +9,8 @@ load_dotenv()
 
 def run_specter_task():
     # Retrieve keys securely from environment
-    API_KEY = os.environ.get("GEMINI_API_KEY")
-    TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+    API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+    TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "").strip()
     
     if not API_KEY or not TAVILY_API_KEY:
         print("[ERROR] API Keys missing. Set GEMINI_API_KEY and TAVILY_API_KEY in environment variables.")

@@ -99,7 +99,7 @@ class StreamIntelAgent:
         retry_delay = 10
         response = None
         
-        models_to_try = [self.model, "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+        models_to_try = [self.model, "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
         
         for model_name in models_to_try:
             for attempt in range(max_retries):
