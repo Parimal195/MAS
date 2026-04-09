@@ -25,7 +25,12 @@ jobs:
         with:
           python-version: '3.11' # Matches the ecosystem we are using
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat packages.txt)
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
