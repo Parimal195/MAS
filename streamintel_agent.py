@@ -95,11 +95,24 @@ class StreamIntelAgent:
             temperature=0.4,
         )
 
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=config
-        )
+        max_retries = 3
+        retry_delay = 10
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=config
+                )
+                break
+            except Exception as e:
+                print(f"[WARNING] API Call failed (Attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    raise e
         
         print("[SPECTER] Intelligence report compiled successfully.")
         return response.text
