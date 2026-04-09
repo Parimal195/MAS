@@ -95,13 +95,13 @@ class StreamIntelAgent:
             temperature=0.4,
         )
 
-        max_retries = 3
-        retry_delay = 10
+        max_retries = 10
+        retry_delay = 20
         response = None
         error_log = []
         last_error = None
         
-        models_to_try = [self.model, "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+        models_to_try = [self.model, "gemini-2.5-pro", "gemini-flash-latest", "gemini-pro-latest"]
         
         for model_name in models_to_try:
             for attempt in range(max_retries):
