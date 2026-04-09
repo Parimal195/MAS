@@ -98,24 +98,33 @@ class StreamIntelAgent:
         max_retries = 3
         retry_delay = 10
         response = None
-        for attempt in range(max_retries):
-            try:
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=config
-                )
-                break
-            except Exception as e:
-                print(f"[WARNING] API Call failed (Attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    print(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                else:
-                    raise e
         
-        print("[SPECTER] Intelligence report compiled successfully.")
-        return response.text
+        models_to_try = [self.model, "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+        
+        for model_name in models_to_try:
+            for attempt in range(max_retries):
+                try:
+                    print(f"[SPECTER] Attempting compile with {model_name}...")
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=config
+                    )
+                    print(f"[SPECTER] Intelligence report compiled successfully using {model_name}.")
+                    return response.text
+                except Exception as e:
+                    print(f"[WARNING] API Call failed for {model_name} (Attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                    else:
+                        print(f"[WARNING] {model_name} entirely unavailable. Switching model.")
+                        break
+            if response:
+                break
+                
+        if not response:
+            raise Exception("All generation attempts and fallback models failed due to API errors.")
         
     def _get_full_persona(self) -> str:
         return """🎯 GOAL (Mission Directive)
