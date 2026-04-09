@@ -98,6 +98,8 @@ class StreamIntelAgent:
         max_retries = 3
         retry_delay = 10
         response = None
+        error_log = []
+        last_error = None
         
         models_to_try = [self.model, "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
         
@@ -113,18 +115,22 @@ class StreamIntelAgent:
                     print(f"[SPECTER] Intelligence report compiled successfully using {model_name}.")
                     return response.text
                 except Exception as e:
+                    last_error = e
                     print(f"[WARNING] API Call failed for {model_name} (Attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         print(f"Retrying in {retry_delay} seconds...")
                         time.sleep(retry_delay)
                     else:
                         print(f"[WARNING] {model_name} entirely unavailable. Switching model.")
+                        error_log.append(f"Model {model_name} failed: {str(e)}")
                         break
             if response:
                 break
                 
         if not response:
-            raise Exception("All generation attempts and fallback models failed due to API errors.")
+            print("[CRITICAL] All models failed. Injecting error log into the intelligence report.")
+            error_markdown = f"# CRITICAL SYSTEM ERROR\n\nSpecter Intelligence Agent encountered catastrophic API failures across all fallback models.\n\n## Developer Error Trace\n\n```text\n{error_log}\nLAST FATAL EXCEPTION:\n{last_error}\n```\n\nPlease check your Google AI Studio API key quotas, billing, or regional availability."
+            return error_markdown
         
     def _get_full_persona(self) -> str:
         return """🎯 GOAL (Mission Directive)
