@@ -40,7 +40,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
-          python run_agent.py > reports/debug-action.txt 2>&1 || true
+          python run_agent.py
 
       - name: Commit and Push the PDF Report
         # This step only runs if a new file was created and isn't identical
