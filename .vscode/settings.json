@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^streamlit run app\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
