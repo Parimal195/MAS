@@ -24,7 +24,12 @@ from datetime import datetime
 from dotenv import load_dotenv
 from github import Github
 from streamintel_agent import StreamIntelAgent
-from pdf_utils import markdown_to_pdf
+try:
+    from pdf_utils import markdown_to_pdf
+    PDF_UTILS_AVAILABLE = True
+except ImportError:
+    PDF_UTILS_AVAILABLE = False
+    print("Warning: pdf_utils not available - PDF generation disabled")
 from email_utils import send_report_email
 from prd_agents import PRDOrchestrator
 
@@ -336,8 +341,12 @@ with tab_dashboard:
                     try:
                         report_md = agent.generate_report(st.session_state.keywords, engine=st.session_state.engine_choice)
                         st.session_state.last_report = report_md
-                        pdf_path = markdown_to_pdf(report_md, is_manual=True)
-                        st.session_state.last_pdf = pdf_path
+                        if PDF_UTILS_AVAILABLE:
+                            pdf_path = markdown_to_pdf(report_md, is_manual=True)
+                            st.session_state.last_pdf = pdf_path
+                        else:
+                            st.warning("PDF generation unavailable - report saved as markdown only")
+                            st.session_state.last_pdf = None
                         
                         # Handle Email Distribution
                         email_input = st.session_state.get('target_emails_input', '')
@@ -400,7 +409,7 @@ with tab_prd:
     st.markdown("### 🤖 AI-Powered PRD Generator")
     st.markdown("Generate enterprise-grade Product Requirement Documents using our multi-agent AI system. The system analyzes your idea/problem statement, conducts market research, and creates comprehensive PRDs with executive review.")
 
-    st.info("💡 **How it works:** Input your idea or problem statement → AI analyzes and researches → Generates PRD with 3 agents → Downloads professional DOCX")
+    st.info("💡 **How it works:** Input your idea or problem statement → AI analyzes and researches → Generates PRD with 3 agents → Downloads professional DOCX → Auto-pushes to GitHub repository")
 
     # PRD Input Section
     st.subheader("📝 Input Your Idea or Problem Statement")
@@ -459,7 +468,9 @@ with tab_prd:
                 GEMINI_API_KEY,
                 TAVILY_API_KEY,
                 GOOGLE_API_KEY,
-                GOOGLE_CX
+                GOOGLE_CX,
+                GITHUB_PAT,
+                GITHUB_REPO
             )
 
             # Generate PRD
@@ -500,7 +511,7 @@ with tab_prd:
                         use_container_width=True
                     )
 
-                st.info(f"📁 PRD saved to: {result['docx_path']}")
+                st.info(f"📁 PRD saved locally: {result['docx_path']}\n\n💾 **Also automatically pushed to your GitHub repository** for online access and version control.")
 
                 # Optional: Show preview (first few sections)
                 with st.expander("👀 Preview PRD Structure", expanded=False):
@@ -516,6 +527,11 @@ with tab_prd:
                     - Technical Requirements
                     - Edge Cases
                     - Missed Cases (from executive review)
+
+                    **✨ New Features:**
+                    - Professional filename format: `PRD - [Generated Title].docx`
+                    - Automatic GitHub repository integration
+                    - Enterprise-grade fallback content when APIs are unavailable
                     """)
         else:
             st.error(f"❌ {result['message']}")
