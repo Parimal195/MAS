@@ -68,3 +68,33 @@ This document provides a highly granular, file-by-file breakdown of every core c
 ### Entity Relationship Diagram (ERD)
 - **Inputs Received:** Receives the raw text output from `streamintel_agent.py`.
 - **Outputs Sent:** Saves a `.pdf` file directly onto the internal hard drive storage. Hands the filename of that PDF to `email_utils.py` so it can be attached.
+
+---
+
+## 6. `prd_agents.py` (The PRD Generation System)
+
+### Product Requirement Document (PRD)
+**Goal:** Generate enterprise-grade Product Requirements Documents using multi-agent AI orchestration.  
+**Details:** This file implements a sophisticated three-agent system that creates comprehensive PRDs. The system analyzes user input, conducts market research, generates detailed PRD sections with iterative refinement, and performs executive-level quality review. It outputs professional DOCX documents ready for stakeholder presentation.
+**Constraints:** Must maintain enterprise-grade quality standards, prevent AI hallucination through research grounding, and ensure all PRD sections are complete and actionable.
+
+### Agent Architecture
+#### 🤖 PRD Researcher Agent
+- **Role:** Competitive Intelligence Analyst
+- **Functions:** Input classification, market research via Tavily/Google Search, MAS reports analysis
+- **Background:** Former McKinsey consultant with 15+ years market research experience
+
+#### 🎯 PRD Maker Agent  
+- **Role:** Senior Product Manager & Technical Writer
+- **Functions:** Generate 3 options per section, use Gemini 2.0 Flash for selection, ensure completeness
+- **Background:** Former Google/Meta PM with 12+ years writing PRDs for billion-user products
+
+#### 👔 VP Product Agent
+- **Role:** Vice President of Product Management
+- **Functions:** Critical PRD review, edge case identification, "Missed Cases" Q&A generation
+- **Background:** 20+ years Fortune 500 VP Product experience, $2B+ portfolio oversight
+
+### Entity Relationship Diagram (ERD)
+- **Inputs Received:** User idea/problem statement from `app.py` PRD tab, API keys from environment
+- **Outputs Sent:** Professional DOCX PRD document to `reports/` directory, progress updates to Streamlit UI
+- **Dependencies:** `google.genai` (Gemini models), `tavily` (search), `docx` (document generation), MAS reports for context

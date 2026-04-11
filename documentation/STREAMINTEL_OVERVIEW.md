@@ -101,3 +101,113 @@ The brain of this application lives in `streamintel_agent.py`. It uses a methodo
 5. **The Output:** Gemini returns a beautifully written, perfectly categorized Markdown (text) report.
 
 By forcing the AI to only look at the box of fresh internet data we just gathered, we prevent the AI from "hallucinating" or making things up, and guarantee it only analyzes the absolute newest information on the internet!
+
+---
+
+## 4. PRD Maker: AI-Powered Product Requirements Document Generator
+
+### Overview
+The PRD Maker is a sophisticated multi-agent AI system that generates enterprise-grade Product Requirements Documents. It uses three specialized AI agents working in orchestration to create comprehensive, research-backed PRDs that meet Google/Meta-level standards.
+
+### The Three-Agent Architecture
+
+```mermaid
+flowchart TD
+    User([👤 Product Manager])
+    
+    subgraph Orchestrator [PRD Orchestrator]
+        Researcher[🤖 PRD Researcher\nMarket Intelligence]
+        Maker[🎯 PRD Maker\nContent Generation]
+        VP[👔 VP Product\nQuality Review]
+    end
+    
+    subgraph Research [Research Phase]
+        Tavily[Tavily Search]
+        Google[Google Search API]
+        MAS[MAS Reports]
+    end
+    
+    subgraph Generation [Generation Phase]
+        Gemini1[Gemini 1.5 Pro\nMain Content]
+        Gemini2[Gemini 2.0 Flash\nSelection Logic]
+    end
+    
+    subgraph Review [Review Phase]
+        Critic[Critical Analysis]
+        EdgeCases[Edge Case Detection]
+    end
+    
+    Output[(📄 Professional DOCX PRD)]
+    
+    %% Flow
+    User -->|Idea/Problem Statement| Orchestrator
+    
+    Researcher -->|1. Analyze Input| Orchestrator
+    Researcher -->|2. Research Market| Research
+    Research -->|Intelligence Brief| Maker
+    
+    Maker -->|3. Generate Sections| Generation
+    Generation -->|Iterative Refinement| Maker
+    Maker -->|Complete PRD| VP
+    
+    VP -->|4. Critical Review| Review
+    Review -->|Quality Assurance| VP
+    VP -->|Final PRD| Output
+```
+
+### Agent Roles & Backgrounds
+
+#### 🤖 Agent 1: PRD Researcher
+**Role:** Senior Competitive Intelligence Analyst  
+**Background:** Former McKinsey consultant with 15+ years in tech market research  
+**Responsibilities:**
+- Classify input as idea, problem statement, or both
+- Conduct comprehensive market research using Tavily + Google Search
+- Analyze existing MAS reports for relevant insights
+- Synthesize competitive intelligence and market data
+
+#### 🎯 Agent 2: PRD Maker
+**Role:** Senior Product Manager & Technical Writer  
+**Background:** Former PM at Google and Meta with 12+ years writing PRDs for billion-user products  
+**Responsibilities:**
+- Generate 3 detailed options for each PRD section
+- Use Gemini 2.0 Flash for intelligent option selection
+- Ensure enterprise-grade quality and completeness
+- Iterate through all standard PRD sections systematically
+
+#### 👔 Agent 3: VP Product
+**Role:** Vice President of Product Management  
+**Background:** 20+ years as VP Product at Fortune 500 companies, $2B+ product portfolios  
+**Responsibilities:**
+- Critical executive review of complete PRD
+- Identify missing requirements and edge cases
+- Flag technical and business risks
+- Add "Missed Cases" section with detailed Q&A analysis
+
+### PRD Sections Generated
+1. **Overview** - Executive summary and product vision
+2. **Problem Statement** - Clear problem definition
+3. **User Personas** - Target user profiles and needs
+4. **North Star Metrics** - Key success measurements
+5. **Functional Requirements** - What the product must do
+6. **Non-Functional Requirements** - Quality attributes and constraints
+7. **User Flow** - User journey and interaction design
+8. **Technical Requirements** - Technical implementation details
+9. **Edge Cases** - Boundary conditions and error scenarios
+10. **Missed Cases** - Critical gaps identified by executive review
+
+### Technical Implementation
+- **Models:** Gemini 1.5 Pro (content generation), Gemini 2.0 Flash (selection logic)
+- **Search:** Tavily API (primary), Google Custom Search API (supplemental)
+- **Output:** Professional DOCX format with proper formatting
+- **Integration:** MAS reports analysis for contextual intelligence
+- **Quality Gates:** Multi-agent review ensures enterprise-grade output
+
+### Usage in Streamlit Dashboard
+The PRD Maker is accessible as the third tab ("📋 PRD Maker") in the main dashboard. Users simply:
+1. Enter their idea or problem statement
+2. Click "Generate PRD"
+3. Wait for the multi-agent system to complete (2-3 minutes)
+4. Download the professional DOCX document
+
+This feature transforms MAS from a research tool into a complete product development platform, enabling rapid PRD generation backed by market intelligence and executive-level review.

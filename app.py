@@ -26,6 +26,7 @@ from github import Github
 from streamintel_agent import StreamIntelAgent
 from pdf_utils import markdown_to_pdf
 from email_utils import send_report_email
+from prd_agents import PRDOrchestrator
 
 # Load variables
 load_dotenv()
@@ -190,7 +191,7 @@ def push_report_to_github(pat, repo_name, local_pdf_path):
 
 # --- UI TABS ---
 
-tab_input, tab_dashboard = st.tabs(["🎛️ Online Configuration", "⚡ Manual Sweep"])
+tab_input, tab_dashboard, tab_prd = st.tabs(["🎛️ Online Configuration", "⚡ Manual Sweep", "📋 PRD Maker"])
 
 with tab_input:
     st.markdown("### ☁️ Cloud Persistence Engine")
@@ -393,5 +394,162 @@ with tab_dashboard:
                 st.markdown(st.session_state.last_report)
         else:
             st.info("No compiled dashboard intel. Wait for backend Github Agent or trigger manually.")
+
+
+with tab_prd:
+    st.markdown("### 🤖 AI-Powered PRD Generator")
+    st.markdown("Generate enterprise-grade Product Requirement Documents using our multi-agent AI system. The system analyzes your idea/problem statement, conducts market research, and creates comprehensive PRDs with executive review.")
+
+    st.info("💡 **How it works:** Input your idea or problem statement → AI analyzes and researches → Generates PRD with 3 agents → Downloads professional DOCX")
+
+    # PRD Input Section
+    st.subheader("📝 Input Your Idea or Problem Statement")
+
+    prd_input = st.text_area(
+        "Describe your product idea or problem statement",
+        placeholder="Example: 'Create a mobile app that helps small businesses manage inventory in real-time using AI-powered demand forecasting'",
+        height=120,
+        help="Be specific about the problem you're solving or the idea you want to build. The AI will analyze this and generate a complete PRD."
+    )
+
+    # Generation Status
+    if 'prd_running' not in st.session_state:
+        st.session_state.prd_running = False
+    if 'prd_result' not in st.session_state:
+        st.session_state.prd_result = None
+
+    col_generate, col_status = st.columns([1, 2])
+
+    with col_generate:
+        if st.button("🚀 Generate PRD", type="primary", use_container_width=True, disabled=st.session_state.prd_running):
+            if not prd_input.strip():
+                st.error("Please enter an idea or problem statement first.")
+            else:
+                st.session_state.prd_running = True
+                st.session_state.prd_result = None
+                st.rerun()
+
+    with col_status:
+        if st.session_state.prd_running:
+            st.info("🤖 Multi-agent PRD generation in progress... This may take 2-3 minutes.")
+
+    # PRD Generation Logic
+    if st.session_state.prd_running and not st.session_state.prd_result:
+        progress_placeholder = st.empty()
+
+        def update_progress(message):
+            progress_placeholder.info(message)
+
+        try:
+            # Initialize orchestrator
+            GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+            TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+            GOOGLE_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
+            GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX", "")
+
+            if not GEMINI_API_KEY:
+                st.error("Missing GEMINI_API_KEY in environment variables.")
+                st.session_state.prd_running = False
+                st.stop()
+
+            if not TAVILY_API_KEY:
+                st.warning("TAVILY_API_KEY not found - research will be limited to MAS reports only.")
+
+            orchestrator = PRDOrchestrator(
+                GEMINI_API_KEY,
+                TAVILY_API_KEY,
+                GOOGLE_API_KEY,
+                GOOGLE_CX
+            )
+
+            # Generate PRD
+            success, docx_path, message = orchestrator.generate_prd(prd_input, update_progress)
+
+            st.session_state.prd_result = {
+                'success': success,
+                'docx_path': docx_path,
+                'message': message
+            }
+
+        except Exception as e:
+            st.session_state.prd_result = {
+                'success': False,
+                'docx_path': '',
+                'message': f"Error: {str(e)}"
+            }
+
+        finally:
+            st.session_state.prd_running = False
+            progress_placeholder.empty()
+            st.rerun()
+
+    # Display Results
+    if st.session_state.prd_result:
+        result = st.session_state.prd_result
+
+        if result['success']:
+            st.success(f"✅ {result['message']}")
+
+            if result['docx_path'] and os.path.exists(result['docx_path']):
+                with open(result['docx_path'], "rb") as f:
+                    st.download_button(
+                        label="📄 Download PRD Document",
+                        data=f,
+                        file_name=os.path.basename(result['docx_path']),
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+
+                st.info(f"📁 PRD saved to: {result['docx_path']}")
+
+                # Optional: Show preview (first few sections)
+                with st.expander("👀 Preview PRD Structure", expanded=False):
+                    st.markdown("""
+                    **Generated PRD includes:**
+                    - Overview
+                    - Problem Statement
+                    - User Personas
+                    - North Star Metrics
+                    - Functional Requirements
+                    - Non-Functional Requirements
+                    - User Flow
+                    - Technical Requirements
+                    - Edge Cases
+                    - Missed Cases (from executive review)
+                    """)
+        else:
+            st.error(f"❌ {result['message']}")
+
+        # Clear result button
+        if st.button("🧹 Clear Results", use_container_width=True):
+            st.session_state.prd_result = None
+            st.rerun()
+
+    # Help Section
+    with st.expander("ℹ️ How the Multi-Agent System Works"):
+        st.markdown("""
+        **🤖 Agent 1: PRD Researcher**
+        - Analyzes your input (idea vs problem statement)
+        - Conducts market research using Tavily + Google Search
+        - Reviews existing MAS reports for insights
+        - Provides research brief to PRD Maker
+
+        **🎯 Agent 2: PRD Maker**
+        - Generates 3 options for each PRD section
+        - Uses Gemini 2.0 Flash to select the best option
+        - Iterates through all sections systematically
+        - Ensures enterprise-grade quality
+
+        **👔 Agent 3: VP Product**
+        - Critical executive review of complete PRD
+        - Identifies missing requirements and edge cases
+        - Adds "Missed Cases" section with Q&A
+        - Final quality gate before delivery
+
+        **📄 Output:** Professional DOCX document ready for stakeholders
+        """)
+
+    st.divider()
+    st.caption("Built with Gemini 1.5 Pro, Tavily Search, and MAS Intelligence | Enterprise-grade PRD generation")
 
 
