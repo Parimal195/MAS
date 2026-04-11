@@ -27,9 +27,11 @@ def send_report_email(receiver_emails, pdf_path):
     if not sender_email or not sender_password:
         try:
             import streamlit as st
-            sender_email = st.secrets.get("SENDER_EMAIL")
-            sender_password = st.secrets.get("SENDER_PASSWORD")
-        except ImportError:
+            if "SENDER_EMAIL" in st.secrets:
+                sender_email = st.secrets["SENDER_EMAIL"]
+            if "SENDER_PASSWORD" in st.secrets:
+                sender_password = st.secrets["SENDER_PASSWORD"]
+        except Exception:
             pass
             
     if not sender_email or not sender_password:
