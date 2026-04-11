@@ -23,6 +23,15 @@ def send_report_email(receiver_emails, pdf_path):
     sender_email = os.environ.get("SENDER_EMAIL")
     sender_password = os.environ.get("SENDER_PASSWORD")
     
+    # Cloud Fallback Check
+    if not sender_email or not sender_password:
+        try:
+            import streamlit as st
+            sender_email = st.secrets.get("SENDER_EMAIL")
+            sender_password = st.secrets.get("SENDER_PASSWORD")
+        except ImportError:
+            pass
+            
     if not sender_email or not sender_password:
         raise ValueError("Backend secrets (SENDER_EMAIL/SENDER_PASSWORD) are not configured for email sending.")
         
