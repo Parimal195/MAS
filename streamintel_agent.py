@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 from google import genai
 from google.genai import types
 from tavily import TavilyClient
@@ -78,8 +79,11 @@ class StreamIntelAgent:
             
         print("[SPECTER] Analyzing patterns and decoding intent...")
         
+        current_date_str = datetime.now().strftime("%B %d, %Y")
         prompt = f"""
         You are Specter. The operational directives have been initialized.
+        CRITICAL DIRECTIVE: The exact date of this report generation is {current_date_str}. You MUST use this exact date at the top of your report header. Do not hallucinate any other dates.
+        
         Here is the raw intelligence scan gathered from the global network based on the target vectors.
         Synthesize this into the highly structured Confidence Intelligence Brief PDF format requested in your directive.
         Follow all formatting instructions exactly, using clear markdown with headings and bullet points.

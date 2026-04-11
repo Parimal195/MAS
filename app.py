@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from github import Github
 from streamintel_agent import StreamIntelAgent
 from pdf_utils import markdown_to_pdf
+from email_utils import send_report_email
 
 # Load variables
 load_dotenv()
@@ -257,6 +258,15 @@ with tab_dashboard:
             disabled=st.session_state.is_running
         )
         
+        st.markdown("---")
+        st.subheader("Distribution (Optional)")
+        target_emails_input = st.text_input(
+            "Target Emails (comma separated)", 
+            placeholder="example@gmail.com, team@company.com",
+            disabled=st.session_state.is_running
+        )
+        st.markdown("---")
+        
         # Stop Search Interruption UI Logic
         if st.session_state.is_running:
             st.warning("⏱️ Specter has locked its targets and is analyzing...")
@@ -267,6 +277,10 @@ with tab_dashboard:
             if st.button("▶️ EXECUTE SPECTER NOW", use_container_width=True):
                 st.session_state.is_running = True
                 st.session_state.engine_choice = engine_choice
+                st.session_state.target_emails_input = target_emails_input
+                # Clear previous email states
+                st.session_state.pop('email_success_msg', None)
+                st.session_state.pop('email_error_msg', None)
                 st.rerun() # Forces rerun to lock the UI and show the stop button before logic fires
                 
         # The actual heavy logic occurs down here asynchronously relative to UI draws
@@ -286,6 +300,21 @@ with tab_dashboard:
                         st.session_state.last_report = report_md
                         pdf_path = markdown_to_pdf(report_md, is_manual=True)
                         st.session_state.last_pdf = pdf_path
+                        
+                        # Handle Email Distribution
+                        email_input = st.session_state.get('target_emails_input', '')
+                        if email_input.strip():
+                            emails_list = [email.strip() for email in email_input.split(",") if email.strip()]
+                            if emails_list:
+                                try:
+                                    e_success, e_msg = send_report_email(emails_list, pdf_path)
+                                    if e_success:
+                                        st.session_state.email_success_msg = e_msg
+                                    else:
+                                        st.session_state.email_error_msg = e_msg
+                                except Exception as e:
+                                    st.session_state.email_error_msg = str(e)
+                        
                         if is_authenticated and GITHUB_PAT and GITHUB_REPO:
                              success, msg = push_report_to_github(GITHUB_PAT, GITHUB_REPO, pdf_path)
                              if success:
@@ -307,6 +336,12 @@ with tab_dashboard:
             st.success("Intelligence compiled successfully.")
             if st.session_state.get('pushed_success'):
                  st.info("☁️ Automatically pushed report to GitHub!")
+                 
+            if 'email_success_msg' in st.session_state:
+                 st.success(f"📧 EMAIL SUCCESS: {st.session_state.email_success_msg}")
+            if 'email_error_msg' in st.session_state:
+                 st.error(f"📧 EMAIL ERROR: {st.session_state.email_error_msg}")
+                 
             if 'last_pdf' in st.session_state and os.path.exists(st.session_state.last_pdf):
                 with open(st.session_state.last_pdf, "rb") as f:
                     st.download_button(
