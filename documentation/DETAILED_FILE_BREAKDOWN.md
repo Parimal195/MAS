@@ -1,100 +1,150 @@
-# Detailed Codebase Breakdown
-
-This document provides a highly granular, file-by-file breakdown of every core component in the **STREAMINTEL (Specter)** system. For each file, we clearly define its individual Product Requirements (What it does) and its Entity Relationships (How it talks to the rest of the system).
+This document provides a highly granular, file-by-file breakdown of every core component in the **STREAMINTEL (Specter)** and **PRD Engine** systems. For each file, we define its Product Requirements (What it does) and Entity Relationships (How it connects).
 
 ---
 
-## 1. `streamintel_agent.py` (The Brain)
+## streamintel_agent.py — The Specter Research Agent
 
 ### Product Requirement Document (PRD)
-**Goal:** Serve as the core cognitive engine. 
-**Details:** This file must masquerade as an elite human researcher. It must be able to take an array of keywords (Target Vectors), intelligently query specialized internet search engines (Tavily/DuckDuckGo), compile raw and messy webpage snippets, feed them securely into Google Gemini's context window with a massive "System Prompt" dictating tone, rules, and operational guidelines, and return a clean markdown text string.
-**Constraints:** It must heavily enforce the rule of "No Hallucination" by grounding its generated answers strictly on the search results it just found.
+**Goal:** Serve as the core cognitive engine for daily intelligence research.
+**Details:** This file must masquerade as an elite human researcher. It takes an array of keywords (Target Vectors), queries specialized search engines (Tavily/DuckDuckGo), compiles raw webpage snippets, feeds them into Google Gemini with a massive "System Prompt" dictating tone and rules, and returns a clean markdown report.
+**Constraints:** Must enforce "No Hallucination" — answers grounded strictly on search results.
 
 ### Entity Relationship Diagram (ERD)
-- **Inputs Received:** Receives execution commands from either `app.py` or `run_agent.py`. Receives raw internet data from **Tavily**.
-- **Outputs Sent:** Hands a formatted Markdown string over to `pdf_utils.py`. Depends heavily on `google.genai`.
+- **Inputs Received:** Commands from `app.py` or `run_agent.py`. Raw internet data from **Tavily**.
+- **Outputs Sent:** Formatted Markdown → `pdf_utils.py`. Depends on `google.genai`.
 
 ---
 
-## 2. `app.py` (The Dashboard)
+## app.py — The Dashboard Website
 
 ### Product Requirement Document (PRD)
 **Goal:** Provide the "Universal Remote Control" UI for non-technical users.
-**Details:** This is the interactive website. It requires two tabs. 
-- *Tab 1* allows the user to tweak the scheduling times and target keywords of the background robot. It must authenticate them via a password, and write those changes directly to the remote GitHub repository using the GitHub API so the background robot receives the new instructions.
-- *Tab 2* allows the user to force an immediate manual sweep by the agent, showing the processing state live on screen with a stop button.
-**Constraints:** Passwords and keys must never be exposed or printed visually on the frontend.
+**Details:** This is the interactive website with three tabs:
+- *Tab 1* allows tweaking scheduling times and target keywords, authenticating via password, and writing changes to the GitHub repository.
+- *Tab 2* allows forcing an immediate manual sweep with a stop button.
+- *Tab 3* houses the PRD Maker — the 7-agent PRD generation system.
+**Constraints:** Passwords and keys must never be exposed on the frontend.
 
 ### Entity Relationship Diagram (ERD)
-- **Inputs Received:** Receives clicks and text input from the **Human User**. Receives backend secrets from Streamlit Cloud Environment Variables.
-- **Outputs Sent:** Pushes UI commands logically to `streamintel_agent.py`. Pushes JSON data securely to **GitHub**. Calls `email_utils.py` if the user typed in an email.
+- **Inputs:** User clicks and text. Streamlit Cloud Environment Variables.
+- **Outputs:** Commands to `streamintel_agent.py`. JSON to **GitHub**. Email triggers to `email_utils.py`. PRD commands to `prd_engine.py`.
 
 ---
 
-## 3. `run_agent.py` (The Background Robot)
+## run_agent.py — The Headless Automation Script
 
 ### Product Requirement Document (PRD)
-**Goal:** Automate the entire process without human intervention.
-**Details:** This script runs strictly in a "Headless" environment (meaning no screen, no mouse, no clicks). It acts as the glue that ties the whole pipeline together automatically. When a clock strikes the requested hour, this script boots up. 
-**Constraints:** It must read `config.json` dynamically to decide what its targets are. It must automatically catch and log fatal errors since there is no human to click "Restart".
+**Goal:** Automate the entire research process without human intervention.
+**Details:** Runs in a "Headless" environment (no screen). Acts as glue for the pipeline. Boots up on schedule, reads `config.json`, triggers the agent, generates PDF, sends email.
+**Constraints:** Must read `config.json` dynamically. Must catch and log fatal errors automatically.
 
 ### Entity Relationship Diagram (ERD)
-- **Inputs Received:** Triggered by **GitHub Action YAML** schedules. Reads instructions from `config.json`.
-- **Outputs Sent:** Triggers `streamintel_agent.py` -> feeds the result into `pdf_utils.py` -> feeds the PDF into `email_utils.py`. 
+- **Inputs:** Triggered by **GitHub Action YAML**. Reads `config.json`.
+- **Outputs:** Triggers `streamintel_agent.py` → `pdf_utils.py` → `email_utils.py`.
 
 ---
 
-## 4. `email_utils.py` (The Post Office)
+## email_utils.py — Email Distribution
 
 ### Product Requirement Document (PRD)
-**Goal:** Dispatch the intelligence reports to human stakeholders.
-**Details:** This module must handle secure SMTP mailing. It is required to log into a Gmail account, craft a multi-part email package (Subject, Body, Attachment), dynamically calculate the physical day of the year to serve a rotating fitness motivational quote, attach the PDF, and dispatch it to an array of email addresses.
-**Constraints:** It must gracefully handle empty email lists, catch SMTP network failures securely, and search both local environment variables and Streamlit Cloud environments for the password.
+**Goal:** Dispatch intelligence reports and PRDs to stakeholders.
+**Details:** Handles SMTP mailing: logs into Gmail, crafts multi-part emails (Subject, Body, Attachment), includes rotating motivational quotes, attaches PDFs, dispatches to email lists.
+**Constraints:** Must handle empty email lists, catch SMTP failures, search both local and Streamlit Cloud environments for credentials.
 
 ### Entity Relationship Diagram (ERD)
-- **Inputs Received:** Triggered by either `app.py` or `run_agent.py`. Receives the absolute file path generated by `pdf_utils.py`.
-- **Outputs Sent:** Outbound secure transfer to **smtp.gmail.com**.
+- **Inputs:** Triggered by `app.py` or `run_agent.py`. Receives PDF file path from `pdf_utils.py`.
+- **Outputs:** Outbound SMTP transfer to **smtp.gmail.com**.
 
 ---
 
-## 5. `pdf_utils.py` (The Compiler)
+## pdf_utils.py — PDF Generation
 
 ### Product Requirement Document (PRD)
-**Goal:** Format generic text into an enterprise-quality physical document.
-**Details:** The agent generates plain "Markdown" text (text with asterisks for bolding). This module must convert that text into HTML, style the HTML using heavy graphical CSS (defining specific font families, sizes, border lines, colors, and margins), and "draw" it onto a high-quality physical A4 PDF file format.
-**Constraints:** It must timestamp files down to the exact second if generated manually, so it doesn't overwrite earlier reports.
+**Goal:** Format text into enterprise-quality PDF documents.
+**Details:** Converts Markdown to HTML, styles with CSS, and renders onto A4 PDF format.
+**Constraints:** Must timestamp files exactly to prevent overwrites.
 
 ### Entity Relationship Diagram (ERD)
-- **Inputs Received:** Receives the raw text output from `streamintel_agent.py`.
-- **Outputs Sent:** Saves a `.pdf` file directly onto the internal hard drive storage. Hands the filename of that PDF to `email_utils.py` so it can be attached.
+- **Inputs:** Raw text from `streamintel_agent.py`.
+- **Outputs:** `.pdf` file to local storage. Filename to `email_utils.py`.
 
 ---
 
-## 6. `prd_agents.py` (The PRD Generation System)
+## prd_engine.py — The 7-Agent PRD System
 
 ### Product Requirement Document (PRD)
-**Goal:** Generate enterprise-grade Product Requirements Documents using multi-agent AI orchestration.  
-**Details:** This file implements a sophisticated three-agent system that creates comprehensive PRDs. The system analyzes user input, conducts market research, generates detailed PRD sections with iterative refinement, and performs executive-level quality review. It outputs professional DOCX documents ready for stakeholder presentation.
-**Constraints:** Must maintain enterprise-grade quality standards, prevent AI hallucination through research grounding, and ensure all PRD sections are complete and actionable.
+**Goal:** Generate enterprise-grade Product Requirements Documents using a 7-agent AI orchestration system.
+**Details:** This file implements the complete autonomous PRD pipeline:
+- **God Agent** — Master orchestrator that interprets user intent and manages workflow
+- **Classifier Agent** — Detects idea vs problem statement
+- **Research Agent** — Combined Tavily + Google Search + Specter reports
+- **PRD Generator Agent** — Generates 3 super-detailed options per section
+- **Evaluator Agent** — Selects best option per section
+- **Gap Detector Agent** — Identifies missing pieces during refinement
+- **Engineering Manager Agent** — Technical review with re-loop capability
+- **VP Product Agent** — Final executive review and approval
+
+Supports iterative refinement: users can add requirements and only affected sections regenerate.
+Includes memory system for research caching and PRD state persistence.
+Error logging pushes to `error_logs/` folder on GitHub.
+
+**Constraints:** Never skip Engineering Manager review. Never finalize without VP Product approval. Always combine Tavily + Google results. Always reuse cached research before new searches. Maximum 2 engineering re-loops per iteration.
 
 ### Agent Architecture
-#### 🤖 PRD Researcher Agent
-- **Role:** Competitive Intelligence Analyst
-- **Functions:** Input classification, market research via Tavily/Google Search, MAS reports analysis
-- **Background:** Former McKinsey consultant with 15+ years market research experience
+#### 🎯 God Agent (Agent 0)
+- **Role:** Head of Product + Chief of Staff
+- **Functions:** Intent understanding, workflow planning, update interpretation
+- **Model:** Gemini 2.0 Flash
 
-#### 🎯 PRD Maker Agent  
+#### 📋 Classifier Agent (Agent 1)
+- **Role:** Input Analyst
+- **Functions:** Idea vs problem classification
+- **Model:** Gemini 2.0 Flash
+
+#### 🔬 Research Agent (Agent 2)
+- **Role:** Senior Market Researcher
+- **Functions:** Tavily + Google combined search, Specter report fetching, incremental research
+- **Model:** Gemini 1.5 Flash
+
+#### ✍️ PRD Generator Agent (Agent 3)
 - **Role:** Senior Product Manager & Technical Writer
-- **Functions:** Generate 3 options per section, use Gemini 2.0 Flash for selection, ensure completeness
-- **Background:** Former Google/Meta PM with 12+ years writing PRDs for billion-user products
+- **Functions:** Generate 3 options per section, incorporate engineering feedback, super-detailed output
+- **Model:** Gemini 1.5 Pro
 
-#### 👔 VP Product Agent
+#### ⚖️ Evaluator Agent (Agent 4)
+- **Role:** Quality Selector
+- **Functions:** Compare 3 options, select best, provide rationale
+- **Model:** Gemini 2.0 Flash
+
+#### 🔍 Gap Detector Agent (Agent 5)
+- **Role:** Quality Inspector
+- **Functions:** Missing section detection, weak area identification, completeness scoring
+- **Model:** Gemini 2.0 Flash
+
+#### 🏗️ Engineering Manager Agent (Agent 6)
+- **Role:** Technical Reviewer
+- **Functions:** Scalability review, security audit, edge case detection, API gap analysis
+- **Model:** Gemini 1.5 Flash
+
+#### 👔 VP Product Agent (Agent 7)
 - **Role:** Vice President of Product Management
-- **Functions:** Critical PRD review, edge case identification, "Missed Cases" Q&A generation
-- **Background:** 20+ years Fortune 500 VP Product experience, $2B+ portfolio oversight
+- **Functions:** Strategic review, GTM risk assessment, missed cases documentation
+- **Model:** Gemini 1.5 Flash
 
 ### Entity Relationship Diagram (ERD)
-- **Inputs Received:** User idea/problem statement from `app.py` PRD tab, API keys from environment
-- **Outputs Sent:** Professional DOCX PRD document to `reports/` directory, progress updates to Streamlit UI
-- **Dependencies:** `google.genai` (Gemini models), `tavily` (search), `docx` (document generation), MAS reports for context
+- **Inputs:** User idea/problem from `app.py` PRD tab, API keys from environment, Specter reports from GitHub
+- **Outputs:** Professional DOCX/PDF/Markdown to `reports/`, progress updates to Streamlit UI, error logs to `error_logs/` on GitHub
+- **Dependencies:** `google.generativeai` (Gemini models), `tavily` (search), `docx` (document generation), `PyGithub` (report fetching + error logging), `xhtml2pdf` (PDF export)
+
+---
+
+## error_logs/ — Error Logging Directory
+
+### Product Requirement Document (PRD)
+**Goal:** Persistent, auditable error tracking on GitHub.
+**Details:** When any agent encounters an error (API failure, model unavailable, network issue), the GitHubErrorLogger creates a timestamped file with full error details and pushes it to this folder via the GitHub API.
+**Constraints:** Must never crash the main process — error logging failures are silently ignored.
+
+### Entity Relationship Diagram (ERD)
+- **Inputs:** Error data from any agent in `prd_engine.py`.
+- **Outputs:** `.log` files pushed to `error_logs/` in GitHub repository.
