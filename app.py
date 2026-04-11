@@ -1,3 +1,21 @@
+"""
+=============================================================================
+ 🎛️ THE DASHBOARD WEBSITE (app.py)
+ 
+ What this file does in plain English:
+ This file is the visual interface that you click on. It is built using a tool
+ called Streamlit. It acts as the "Universal Remote Control" for the entire 
+ intelligence system.
+ 
+ Tab 1 (Online Configuration): Allows you to save your target keywords and 
+                             default emails directly into your GitHub repository 
+                             so the background night-robot uses them.
+ Tab 2 (Immediate Execution): Allows you to push the giant "Execute" button 
+                              to force the AI to do a scan right now and email 
+                              the results to you immediately.
+=============================================================================
+"""
+
 import streamlit as st
 import os
 import json

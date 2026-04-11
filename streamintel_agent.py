@@ -1,3 +1,21 @@
+"""
+=============================================================================
+ 🧠 THE ARTIFICIAL INTELLIGENCE CORE (streamintel_agent.py)
+ 
+ What this file does in plain English:
+ This file contains the actual "Ghost Agent" named Specter. It behaves like a 
+ human researcher. 
+ 
+ Step 1: It grabs your "Target Vectors" (like "Twitch Monetization").
+ Step 2: It secretly connects to Tavily (a search engine built for AI) and 
+         scrapes the live internet for everything related to that topic from 
+         the past 7 days.
+ Step 3: It connects to Google Gemini (the actual AI "Brain"). It places all 
+         the messy internet data into a box, hands the box to Gemini, and asks 
+         Gemini to write a clean, structured intelligence report out of it.
+=============================================================================
+"""
+
 import os
 import time
 from datetime import datetime
