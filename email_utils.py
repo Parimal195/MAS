@@ -4,6 +4,20 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
 import os
+from datetime import datetime
+
+FITNESS_MOTIVATION = [
+    "A 30-minute workout is just 2% of your day. No excuses.",
+    "Your health is your true wealth; invest in your physical fitness today.",
+    "Push yourself, because no one else is going to do it for you.",
+    "Success starts with self-discipline. Make time to sweat today.",
+    "Take care of your body. It's the only place you have to live.",
+    "Energy and persistence conquer all things. Keep moving!",
+    "You don't have to be extreme, just consistent. Drink water and stretch!",
+    "Exercise not only changes your body, it changes your mind, attitude, and mood.",
+    "The harder the workout, the better the end result. Stay resilient.",
+    "Don't stop when you're tired. Stop when you're done."
+]
 
 def send_report_email(receiver_emails, pdf_path):
     sender_email = os.environ.get("SENDER_EMAIL")
@@ -21,9 +35,26 @@ def send_report_email(receiver_emails, pdf_path):
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = ", ".join(receiver_emails)
-    msg['Subject'] = "STREAMINTEL: Intelligence Scan Complete"
     
-    body = "Hello,\n\nThe manual intelligence sweep you requested has concluded. Please find the compiled Confidential Intelligence Brief attached as a PDF.\n\nRegards,\nSpecter Intelligence Engine"
+    today_date = datetime.now().strftime("%B %d, %Y")
+    msg['Subject'] = f"Daily Market Research - {today_date}"
+    
+    # Rotate securely based on the day of the year
+    day_of_year = datetime.now().timetuple().tm_yday
+    quote = FITNESS_MOTIVATION[day_of_year % len(FITNESS_MOTIVATION)]
+    
+    body = f"""Hi Team,
+
+{quote}
+
+Sharing today's snapshot of market trends, key research, and what competitors in the streaming space are building.
+
+Detailed report is attached—take a quick look to stay ahead.
+
+Don't forget to drop a thank you to Parimal for this daily journal, stay updated and go win the market like a boss!
+
+Cheers,
+Parimal"""
     msg.attach(MIMEText(body, 'plain'))
     
     # Attach PDF if it exists

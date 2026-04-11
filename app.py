@@ -52,10 +52,12 @@ if 'keywords' not in st.session_state:
         with open("config.json", "r") as f:
             cfg = json.load(f)
             st.session_state.keywords = cfg.get("keywords", [])
+            st.session_state.emails = cfg.get("emails", [])
             time_str = cfg.get("schedule_time", "00:00")
             st.session_state.saved_time = datetime.strptime(time_str, "%H:%M").time()
     except:
         st.session_state.keywords = ["Twitch engagement", "YouTube Live discovery"]
+        st.session_state.emails = []
         st.session_state.saved_time = datetime.now().time()
 
 # --- GITHUB HELPER FUNCTIONS ---
@@ -70,14 +72,14 @@ def get_utc_cron_string(local_time_obj, timezone_str):
     utc_dt = local_dt.astimezone(pytz.utc)
     return f"{utc_dt.minute} {utc_dt.hour} * * *"
 
-def update_github_online(pat, repo_name, keywords_list, enable_schedule, cron_string, schedule_time):
+def update_github_online(pat, repo_name, keywords_list, emails_list, enable_schedule, cron_string, schedule_time):
     """Pushes updates physically into the GitHub repo configs"""
     try:
         g = Github(pat)
         repo = g.get_repo(repo_name)
         
         # 1. Update config.json
-        config_data = json.dumps({"keywords": keywords_list, "schedule_time": schedule_time.strftime("%H:%M")}, indent=2)
+        config_data = json.dumps({"keywords": keywords_list, "emails": emails_list, "schedule_time": schedule_time.strftime("%H:%M")}, indent=2)
         try:
             file = repo.get_contents("config.json")
             repo.update_file(file.path, "Update agent search vectors globally", config_data, file.sha)
@@ -192,12 +194,27 @@ with tab_input:
         )
         parsed_keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
         
-        if parsed_keywords != st.session_state.keywords:
+        st.markdown("---")
+        st.markdown("#### Automated Daily Mailing List")
+        st.markdown("Supply the emails that should automatically receive the daily backend schedule.")
+        if "default_emails_input_str" not in st.session_state:
+            st.session_state.default_emails_input_str = ", ".join(st.session_state.emails)
+            
+        default_emails_input = st.text_area(
+            "Daily Targets (comma separated)", 
+            key="default_emails_input_str",
+            height=70
+        )
+        parsed_emails = [e.strip() for e in default_emails_input.split(",") if e.strip()]
+        
+        if parsed_keywords != st.session_state.keywords or parsed_emails != st.session_state.emails:
             st.session_state.keywords = parsed_keywords
+            st.session_state.emails = parsed_emails
             try:
                 with open("config.json", "r") as f: cfg = json.load(f)
             except: cfg = {}
             cfg["keywords"] = parsed_keywords
+            cfg["emails"] = parsed_emails
             with open("config.json", "w") as f: json.dump(cfg, f, indent=2)
 
     with col_schedule:
@@ -234,12 +251,14 @@ with tab_input:
                     GITHUB_PAT, 
                     GITHUB_REPO, 
                     parsed_keywords, 
+                    parsed_emails,
                     enable_scheduler, 
                     cron_utc,
                     schedule_time
                 )
                 if success:
                     st.session_state.keywords = parsed_keywords
+                    st.session_state.emails = parsed_emails
                     st.success(f"✅ Success! Your background agent will now target these vectors daily at {cron_utc} UTC.")
                     if hasattr(st.session_state, 'warning_msg'):
                         st.warning(st.session_state.warning_msg)
@@ -259,9 +278,9 @@ with tab_dashboard:
         )
         
         st.markdown("---")
-        st.subheader("Distribution (Optional)")
+        st.subheader("One-Time Manual Mail Drop (Optional)")
         target_emails_input = st.text_input(
-            "Target Emails (comma separated)", 
+            "Ad-Hoc Emails (comma separated)", 
             placeholder="example@gmail.com, team@company.com",
             disabled=st.session_state.is_running
         )
