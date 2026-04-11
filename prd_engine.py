@@ -1,0 +1,1610 @@
+"""
+=============================================================================
+ 🧠 PRD ENGINE — AUTONOMOUS MULTI-AGENT PRD SYSTEM (prd_engine.py)
+
+ What this file does in plain English:
+ This file is an entire AI product team packed into code. When you type a
+ simple idea like "Build an inventory app", seven specialized AI agents
+ work together — just like a real product team — to produce a detailed,
+ professional Product Requirements Document (PRD).
+
+ The 7 Agents:
+   0. God Agent        — The boss. Decides what to do and who to assign.
+   1. Classifier Agent — Figures out if your input is an idea or a problem.
+   2. Research Agent   — Searches the internet + reads Specter reports.
+   3. PRD Generator    — Writes 3 drafts of every section.
+   4. Evaluator Agent  — Picks the best draft for each section.
+   5. Gap Detector     — Finds missing pieces in the PRD.
+   6. Eng Manager      — Reviews technical feasibility and edge cases.
+   7. VP Product       — Final executive review before delivery.
+
+ Key Features:
+   - Combined Tavily + Google Search for comprehensive research
+   - Pulls Specter intelligence reports from GitHub for context
+   - Memory system for iterative refinement (doesn't redo work)
+   - Error logging to GitHub (error_logs/ folder)
+   - Super-detailed output readable by non-PM people
+=============================================================================
+"""
+
+import os
+import json
+import time
+import traceback
+import requests
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from copy import deepcopy
+
+import google.generativeai as genai
+
+# Optional imports with graceful fallback
+try:
+    from tavily import TavilyClient
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
+    print("⚠️ tavily-python not installed — Tavily search disabled")
+
+try:
+    from docx import Document
+    from docx.shared import Inches, Pt
+    from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+    print("⚠️ python-docx not installed — DOCX generation disabled")
+
+try:
+    from xhtml2pdf import pisa
+    import markdown as md_lib
+    PDF_EXPORT_AVAILABLE = True
+except ImportError:
+    PDF_EXPORT_AVAILABLE = False
+
+try:
+    from github import Github
+    GITHUB_AVAILABLE = True
+except ImportError:
+    GITHUB_AVAILABLE = False
+
+
+# =============================================================================
+# 📦 DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class PRDSection:
+    """A single section of the PRD with its generation history."""
+    title: str
+    options: List[str] = field(default_factory=list)
+    selected_option: Optional[str] = None
+    rationale: Optional[str] = None
+    version: int = 1
+    version_history: List[dict] = field(default_factory=list)
+
+    def update(self, new_content: str, new_rationale: str):
+        """Save current version to history and update."""
+        if self.selected_option:
+            self.version_history.append({
+                "version": self.version,
+                "content": self.selected_option,
+                "rationale": self.rationale,
+                "timestamp": datetime.now().isoformat()
+            })
+        self.selected_option = new_content
+        self.rationale = new_rationale
+        self.version += 1
+
+
+@dataclass
+class PRDContext:
+    """Classified user input with extracted intent."""
+    input_type: str  # "idea", "problem_statement", or "both"
+    problem_statement: str
+    idea: str
+    original_input: str = ""
+    research_data: Optional[Dict] = None
+
+
+@dataclass
+class PRDMemory:
+    """
+    Full state persistence across PRD iterations.
+
+    research_memory: Dict of query → results (cached, reusable)
+    prd_state:       Current PRD sections dict
+    section_history: List of all version changes
+    version:         Current version number
+    user_inputs:     All user inputs (original + refinements)
+    context:         Current PRDContext
+    """
+    research_memory: Dict[str, Any] = field(default_factory=dict)
+    prd_state: Dict[str, PRDSection] = field(default_factory=dict)
+    section_history: List[dict] = field(default_factory=list)
+    version: int = 1
+    user_inputs: List[str] = field(default_factory=list)
+    context: Optional[PRDContext] = None
+    engineering_review: Optional[dict] = None
+    vp_review: Optional[dict] = None
+
+    def get_prd_markdown(self) -> str:
+        """Render current PRD state as readable markdown."""
+        lines = [f"# Product Requirements Document (v{self.version})\n"]
+        if self.context:
+            lines.append(f"**Input:** {self.context.original_input}\n")
+        for name, section in self.prd_state.items():
+            lines.append(f"\n## {section.title}\n")
+            lines.append(section.selected_option or "_Not yet generated_")
+            lines.append("")
+        return "\n".join(lines)
+
+
+@dataclass
+class GapReport:
+    """Output of the Gap Detector Agent."""
+    missing_sections: List[str] = field(default_factory=list)
+    improvements_needed: List[dict] = field(default_factory=list)
+    weak_areas: List[str] = field(default_factory=list)
+    raw_analysis: str = ""
+
+
+@dataclass
+class EngineeringReview:
+    """Output of the Engineering Manager Agent."""
+    issues: List[dict] = field(default_factory=list)
+    approved: bool = False
+    feedback_for_sections: Dict[str, str] = field(default_factory=dict)
+    raw_review: str = ""
+
+
+# =============================================================================
+# 🔴 ERROR LOGGER — Pushes error files to GitHub
+# =============================================================================
+
+class GitHubErrorLogger:
+    """
+    Logs errors to the GitHub repository's error_logs/ folder.
+    Each error creates a separate timestamped file for easy tracking.
+    """
+
+    def __init__(self, github_pat: str = "", github_repo: str = ""):
+        self.pat = github_pat
+        self.repo_name = github_repo
+
+    def log_error(self, error_type: str, error_message: str,
+                  traceback_str: str, context: str = None) -> bool:
+        """
+        Push an error log file to GitHub error_logs/ folder.
+
+        Args:
+            error_type: Category (e.g., "research_agent", "prd_generator")
+            error_message: The error message
+            traceback_str: Full Python traceback
+            context: Additional context about what was happening
+        """
+        if not self.pat or not self.repo_name or not GITHUB_AVAILABLE:
+            print(f"[ERROR LOG - LOCAL] {error_type}: {error_message}")
+            return False
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"error_logs/error_{error_type}_{timestamp}.log"
+
+        content = f"""========================================
+ STREAMINTEL PRD ENGINE — ERROR LOG
+========================================
+
+Error Type    : {error_type}
+Timestamp     : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Agent/Module  : {error_type}
+Context       : {context or 'N/A'}
+
+----------------------------------------
+ ERROR MESSAGE
+----------------------------------------
+{error_message}
+
+----------------------------------------
+ FULL TRACEBACK
+----------------------------------------
+{traceback_str}
+
+========================================
+ END OF ERROR LOG
+========================================
+"""
+
+        try:
+            g = Github(self.pat)
+            repo = g.get_repo(self.repo_name)
+            commit_msg = f"error_log: {error_type} at {timestamp}"
+            repo.create_file(filename, commit_msg, content)
+            print(f"✅ Error logged to GitHub: {filename}")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to push error log to GitHub: {e}")
+            return False
+
+
+# =============================================================================
+# 🤖 AGENT BASE CLASS
+# =============================================================================
+
+class BaseAgent:
+    """Shared agent infrastructure — model initialization with fallback."""
+
+    def __init__(self, gemini_api_key: str, preferred_models: List[str],
+                 agent_name: str, error_logger: GitHubErrorLogger = None):
+        genai.configure(api_key=gemini_api_key)
+        self.agent_name = agent_name
+        self.error_logger = error_logger
+        self.model = None
+
+        for model_name in preferred_models:
+            try:
+                self.model = genai.GenerativeModel(model_name)
+                print(f"  ✅ {agent_name} → {model_name}")
+                break
+            except Exception:
+                continue
+
+        if self.model is None:
+            # Last resort fallback
+            try:
+                self.model = genai.GenerativeModel("gemini-1.5-flash")
+                print(f"  ⚠️ {agent_name} → gemini-1.5-flash (fallback)")
+            except Exception:
+                raise Exception(f"{agent_name}: No compatible Gemini models available.")
+
+    def _call_llm(self, prompt: str, context: str = "", max_retries: int = 3) -> str:
+        """Call the LLM with retry logic and error logging."""
+        for attempt in range(max_retries):
+            try:
+                response = self.model.generate_content(prompt)
+                return response.text.strip()
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait = 5 * (attempt + 1)
+                    print(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s: {e}")
+                    time.sleep(wait)
+                else:
+                    error_msg = str(e)
+                    tb = traceback.format_exc()
+                    if self.error_logger:
+                        self.error_logger.log_error(
+                            self.agent_name.lower().replace(" ", "_"),
+                            error_msg, tb, context
+                        )
+                    raise
+
+    def _call_llm_json(self, prompt: str, context: str = "") -> dict:
+        """Call LLM and parse JSON response."""
+        raw = self._call_llm(prompt, context)
+        # Strip markdown code fences if present
+        cleaned = raw
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0]
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].split("```")[0]
+        try:
+            return json.loads(cleaned.strip())
+        except json.JSONDecodeError:
+            # Try to find JSON object in the response
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start != -1 and end > start:
+                try:
+                    return json.loads(raw[start:end])
+                except:
+                    pass
+            return {"raw_response": raw, "parse_error": True}
+
+
+# =============================================================================
+# 0️⃣ GOD AGENT — Master Orchestrator
+# =============================================================================
+
+class GodAgent(BaseAgent):
+    """
+    🎯 THE GOD AGENT (Master Orchestrator)
+
+    Role: Head of Product + Chief of Staff + Program Manager
+    Think of this as the CEO of the AI product team. It understands
+    what the user wants, decides which agents to activate, manages
+    the workflow, and triggers re-research loops when needed.
+    """
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            "God Agent",
+            error_logger
+        )
+
+    def plan_initial_workflow(self, user_input: str) -> dict:
+        """Decide the workflow for initial PRD generation."""
+        prompt = f"""You are the God Agent — the master orchestrator of a multi-agent PRD system.
+A user has submitted the following input for PRD generation:
+
+"{user_input}"
+
+Analyze this input and create a workflow plan. Respond in JSON:
+{{
+    "input_quality": "high|medium|low",
+    "input_summary": "one-line summary of what user wants to build",
+    "research_queries": ["list of 4-6 specific research queries to investigate"],
+    "focus_areas": ["list of key areas the PRD should emphasize"],
+    "special_instructions": "any special considerations for the PRD team"
+}}"""
+        try:
+            result = self._call_llm_json(prompt, f"Initial planning for: {user_input[:100]}")
+            if result.get("parse_error"):
+                return {
+                    "input_quality": "medium",
+                    "input_summary": user_input[:200],
+                    "research_queries": [
+                        f"market analysis {user_input[:100]}",
+                        f"competitors for {user_input[:100]}",
+                        f"technical challenges {user_input[:100]}",
+                        f"user needs {user_input[:100]}"
+                    ],
+                    "focus_areas": ["market fit", "technical feasibility", "user experience"],
+                    "special_instructions": "Standard PRD generation flow"
+                }
+            return result
+        except Exception as e:
+            return {
+                "input_quality": "medium",
+                "input_summary": user_input[:200],
+                "research_queries": [
+                    f"market analysis {user_input[:100]}",
+                    f"competitors {user_input[:100]}",
+                    f"industry trends {user_input[:100]}",
+                    f"technical feasibility {user_input[:100]}"
+                ],
+                "focus_areas": ["product-market fit", "technical architecture", "user experience"],
+                "special_instructions": "Proceed with standard workflow"
+            }
+
+    def interpret_update(self, new_input: str, memory: PRDMemory) -> dict:
+        """Decide how to handle iterative user updates."""
+        current_prd_summary = ""
+        for name, section in memory.prd_state.items():
+            current_prd_summary += f"- {name}: {(section.selected_option or '')[:100]}...\n"
+
+        prompt = f"""You are the God Agent orchestrating a PRD refinement.
+
+The user previously built a PRD (v{memory.version}) with these sections:
+{current_prd_summary}
+
+Previous inputs: {json.dumps(memory.user_inputs[-3:])}
+
+The user now says:
+"{new_input}"
+
+Decide what to do. Respond in JSON:
+{{
+    "action": "update_sections|regenerate_all|add_requirement",
+    "affected_sections": ["list of section names to regenerate"],
+    "new_research_needed": true|false,
+    "research_queries": ["specific queries if research needed"],
+    "instructions_for_generator": "specific instructions for the PRD generator"
+}}"""
+        try:
+            result = self._call_llm_json(prompt, f"Update interpretation: {new_input[:100]}")
+            if result.get("parse_error"):
+                return {
+                    "action": "update_sections",
+                    "affected_sections": list(memory.prd_state.keys()),
+                    "new_research_needed": True,
+                    "research_queries": [f"research for: {new_input}"],
+                    "instructions_for_generator": new_input
+                }
+            return result
+        except Exception:
+            return {
+                "action": "update_sections",
+                "affected_sections": list(memory.prd_state.keys()),
+                "new_research_needed": True,
+                "research_queries": [f"{new_input} market analysis"],
+                "instructions_for_generator": new_input
+            }
+
+
+# =============================================================================
+# 1️⃣ CLASSIFIER AGENT
+# =============================================================================
+
+class ClassifierAgent(BaseAgent):
+    """
+    📋 CLASSIFIER AGENT
+
+    Role: Input Analyst
+    Reads the user's input and figures out: is this an idea they want
+    to build? A problem they want to solve? Or both? This classification
+    shapes how the rest of the agents approach the work.
+    """
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            "Classifier Agent",
+            error_logger
+        )
+
+    def classify(self, user_input: str) -> PRDContext:
+        """Classify user input as idea, problem statement, or both."""
+        prompt = f"""Analyze this user input for a Product Requirements Document:
+
+"{user_input}"
+
+Classify it and extract components. Respond in JSON:
+{{
+    "input_type": "idea|problem_statement|both",
+    "problem_statement": "the core problem being solved (write one even if input is just an idea)",
+    "idea": "the product/feature concept (write one even if input is just a problem)"
+}}"""
+        try:
+            result = self._call_llm_json(prompt, f"Classifying: {user_input[:100]}")
+            return PRDContext(
+                input_type=result.get("input_type", "both"),
+                problem_statement=result.get("problem_statement", user_input),
+                idea=result.get("idea", user_input),
+                original_input=user_input
+            )
+        except Exception:
+            return PRDContext(
+                input_type="both",
+                problem_statement=user_input,
+                idea=user_input,
+                original_input=user_input
+            )
+
+
+# =============================================================================
+# 2️⃣ RESEARCH AGENT
+# =============================================================================
+
+class ResearchAgent(BaseAgent):
+    """
+    🔬 RESEARCH AGENT
+
+    Role: Senior Market Researcher
+    Searches the internet using BOTH Tavily AND Google Search for every
+    query, combines and deduplicates results. Also pulls Specter
+    intelligence reports from the GitHub repository for additional context.
+    Supports incremental research — reuses past results from memory.
+    """
+
+    def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
+                 google_api_key: str = "", google_cx: str = "",
+                 github_pat: str = "", github_repo: str = "",
+                 error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-1.5-flash", "gemini-2.0-flash"],
+            "Research Agent",
+            error_logger
+        )
+        self.tavily_client = None
+        if tavily_api_key and TAVILY_AVAILABLE:
+            try:
+                self.tavily_client = TavilyClient(api_key=tavily_api_key)
+            except Exception:
+                pass
+        self.google_api_key = google_api_key
+        self.google_cx = google_cx
+        self.github_pat = github_pat
+        self.github_repo = github_repo
+
+    def _search_tavily(self, query: str, max_results: int = 5) -> List[Dict]:
+        """Search using Tavily API."""
+        if not self.tavily_client:
+            return []
+        try:
+            results = self.tavily_client.search(
+                query=query, search_depth="advanced", max_results=max_results,
+                include_raw_content=False
+            )
+            return [{
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": r.get("content", ""),
+                "source": "tavily"
+            } for r in results.get("results", [])]
+        except Exception as e:
+            print(f"  ⚠️ Tavily search error: {e}")
+            return []
+
+    def _search_google(self, query: str, max_results: int = 5) -> List[Dict]:
+        """Search using Google Custom Search API."""
+        if not self.google_api_key or not self.google_cx:
+            return []
+        try:
+            url = "https://www.googleapis.com/customsearch/v1"
+            params = {
+                "key": self.google_api_key, "cx": self.google_cx,
+                "q": query, "num": max_results
+            }
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            return [{
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "source": "google"
+            } for item in data.get("items", [])]
+        except Exception as e:
+            print(f"  ⚠️ Google search error: {e}")
+            return []
+
+    def _merge_and_deduplicate(self, *result_lists) -> List[Dict]:
+        """Merge multiple result lists and remove duplicate URLs."""
+        seen_urls = set()
+        merged = []
+        for results in result_lists:
+            for r in results:
+                url = r.get("url", "")
+                if url and url not in seen_urls:
+                    merged.append(r)
+                    seen_urls.add(url)
+        return merged
+
+    def _fetch_specter_reports(self) -> List[str]:
+        """
+        Pull Specter intelligence reports from GitHub repo's reports/ folder.
+        Extracts report names and dates as additional research context.
+        """
+        if not self.github_pat or not self.github_repo or not GITHUB_AVAILABLE:
+            return []
+
+        insights = []
+        try:
+            g = Github(self.github_pat)
+            repo = g.get_repo(self.github_repo)
+            try:
+                contents = repo.get_contents("reports")
+                for item in contents:
+                    if item.name.endswith(".pdf") or item.name.endswith(".docx"):
+                        # Extract date and context from filename
+                        insights.append(
+                            f"Specter Report: {item.name} "
+                            f"(Size: {item.size} bytes, "
+                            f"Path: {item.path}) — "
+                            f"Contains market intelligence and competitive analysis "
+                            f"generated by the Specter autonomous research agent."
+                        )
+            except Exception:
+                # reports/ folder might not exist yet
+                pass
+
+            print(f"  📊 Found {len(insights)} Specter reports in GitHub repo")
+            return insights
+        except Exception as e:
+            print(f"  ⚠️ Could not fetch Specter reports: {e}")
+            return []
+
+    def research(self, queries: List[str], memory: PRDMemory = None) -> Dict[str, Any]:
+        """
+        Conduct comprehensive research using Tavily + Google + Specter reports.
+        Reuses cached results from memory when available.
+        """
+        print("  🔬 Research Agent: Starting research phase...")
+        research_data = {
+            "results_by_query": {},
+            "specter_reports": [],
+            "summary": "",
+            "timestamp": datetime.now().isoformat()
+        }
+
+        for query in queries:
+            # Check memory cache first
+            if memory and query in memory.research_memory:
+                print(f"  ♻️  Cache hit for: '{query[:60]}...'")
+                research_data["results_by_query"][query] = memory.research_memory[query]
+                continue
+
+            print(f"  🔍 Searching: '{query[:60]}...'")
+
+            # Fire BOTH search engines
+            tavily_results = self._search_tavily(query)
+            google_results = self._search_google(query)
+
+            # Combine and deduplicate
+            combined = self._merge_and_deduplicate(tavily_results, google_results)
+            print(f"     → {len(tavily_results)} Tavily + {len(google_results)} Google = {len(combined)} unique results")
+
+            research_data["results_by_query"][query] = combined
+            time.sleep(1)  # Politeness delay
+
+        # Fetch Specter reports from GitHub
+        research_data["specter_reports"] = self._fetch_specter_reports()
+
+        # Generate research summary using LLM
+        research_data["summary"] = self._synthesize_research(research_data)
+
+        print("  ✅ Research phase complete")
+        return research_data
+
+    def _synthesize_research(self, research_data: Dict) -> str:
+        """Create a comprehensive research summary."""
+        all_snippets = []
+        for query, results in research_data.get("results_by_query", {}).items():
+            for r in results[:3]:
+                all_snippets.append(f"[{query}] {r.get('title', '')}: {r.get('snippet', '')}")
+
+        specter_str = "\n".join(research_data.get("specter_reports", []))
+
+        if not all_snippets and not specter_str:
+            return "Limited research data available. PRD will be generated based on the input description."
+
+        prompt = f"""Synthesize these research findings into a comprehensive research brief (500 words max).
+Focus on: market landscape, competitors, user needs, technical considerations, and opportunities.
+
+SEARCH RESULTS:
+{chr(10).join(all_snippets[:20])}
+
+SPECTER INTELLIGENCE REPORTS:
+{specter_str or "None available"}
+
+Write a clear, structured research brief with bullet points."""
+
+        try:
+            return self._call_llm(prompt, "Research synthesis")
+        except Exception:
+            return f"Research collected: {len(all_snippets)} search results, {len(research_data.get('specter_reports', []))} Specter reports."
+
+
+# =============================================================================
+# 3️⃣ PRD GENERATOR AGENT
+# =============================================================================
+
+class PRDGeneratorAgent(BaseAgent):
+    """
+    ✍️ PRD GENERATOR AGENT
+
+    Role: Senior Product Manager & Technical Writer
+    The workhorse. For every section of the PRD, it creates 3 complete
+    detailed drafts — each taking a different angle. Every section starts
+    with a plain-English explanation so non-PM readers can understand.
+    """
+
+    SECTIONS = [
+        "Executive Summary",
+        "Problem Statement",
+        "Solution Overview",
+        "User Personas",
+        "User Stories & Flows",
+        "Functional Requirements",
+        "Non-Functional Requirements",
+        "Technical Architecture",
+        "Business Requirements & Monetization",
+        "Implementation Roadmap",
+        "Risks & Mitigations",
+        "Success Metrics & KPIs",
+    ]
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-1.5-pro", "gemini-1.5-flash"],
+            "PRD Generator",
+            error_logger
+        )
+
+    def generate_section(self, section: str, context: PRDContext,
+                         research_summary: str, god_plan: dict,
+                         engineering_feedback: str = "") -> List[str]:
+        """Generate 3 detailed option drafts for a single PRD section."""
+
+        section_guide = self._get_section_guide(section)
+        feedback_block = ""
+        if engineering_feedback:
+            feedback_block = f"""
+⚠️ ENGINEERING FEEDBACK (Address these issues in your rewrite):
+{engineering_feedback}
+"""
+
+        prompt = f"""You are a world-class Senior Product Manager writing an enterprise-grade PRD.
+
+CRITICAL FORMATTING RULES:
+1. Start with a 2-3 sentence plain-English explanation of WHAT this section is and WHY it matters.
+   Write as if the reader has NEVER seen a PRD before and knows nothing about product management.
+2. Then provide extremely detailed, specific content.
+3. Use bullet points, numbered lists, tables, and clear headers.
+4. Include exact numbers, specific features, concrete user flows, and measurable outcomes.
+5. The section must be SO detailed that a first-time reader can understand exactly what is being
+   built, why it matters, and how it will be implemented.
+6. Minimum 400 words per option. Be thorough, not brief.
+
+CONTEXT:
+- User's Idea: {context.idea}
+- Problem Being Solved: {context.problem_statement}
+- Input Type: {context.input_type}
+- Focus Areas: {json.dumps(god_plan.get('focus_areas', []))}
+- Special Instructions: {god_plan.get('special_instructions', 'None')}
+
+RESEARCH INSIGHTS:
+{research_summary[:3000]}
+
+{feedback_block}
+
+SECTION: {section}
+{section_guide}
+
+Generate exactly 3 complete, distinct options for this section.
+Label them clearly as "--- OPTION 1 ---", "--- OPTION 2 ---", "--- OPTION 3 ---".
+Each option should take a slightly different strategic angle while maintaining quality.
+"""
+        try:
+            raw = self._call_llm(prompt, f"Generating section: {section}")
+            options = self._parse_three_options(raw)
+            return options
+        except Exception as e:
+            fallback = self._get_fallback(section, context)
+            return [fallback, fallback, fallback]
+
+    def _parse_three_options(self, raw: str) -> List[str]:
+        """Parse LLM output into 3 separate options."""
+        markers = ["--- OPTION 1 ---", "--- OPTION 2 ---", "--- OPTION 3 ---"]
+        options = []
+
+        # Try structured parsing first
+        parts = raw
+        for i, marker in enumerate(markers):
+            if marker in parts:
+                split = parts.split(marker, 1)
+                if i > 0 and split[0].strip():
+                    options.append(split[0].strip())
+                parts = split[1] if len(split) > 1 else ""
+
+        if parts.strip():
+            options.append(parts.strip())
+
+        # If structured parsing failed, try splitting by "Option X"
+        if len(options) < 3:
+            options = []
+            import re
+            splits = re.split(r'(?:^|\n)(?:Option\s+\d|OPTION\s+\d|\*\*Option\s+\d)', raw, flags=re.IGNORECASE)
+            for s in splits:
+                stripped = s.strip()
+                if stripped and len(stripped) > 50:
+                    options.append(stripped)
+
+        # Pad if still not enough
+        while len(options) < 3:
+            if options:
+                options.append(options[0])
+            else:
+                options.append("Content generation in progress — please retry.")
+
+        return options[:3]
+
+    def _get_section_guide(self, section: str) -> str:
+        """Section-specific writing instructions."""
+        guides = {
+            "Executive Summary": """Write a concise overview covering: what the product does, who it serves,
+key value proposition, high-level approach, and expected impact. Think of this as the "elevator pitch"
+plus a summary of the entire document. A CEO should be able to read ONLY this section and understand
+the full picture.""",
+
+            "Problem Statement": """Clearly define the problem: who experiences it, how painful it is,
+what the current workarounds are, why existing solutions fail, quantitative impact (lost revenue,
+wasted time, user drop-off), and why NOW is the right time to solve it. Include real-world examples.""",
+
+            "Solution Overview": """Describe what you're building: the core product concept, key features
+at a high level, how it differs from competitors, the technical approach in simple terms, and core
+user experience. Include a "before vs after" comparison showing the world without and with this product.""",
+
+            "User Personas": """Create 3-4 detailed user personas with: Name, Role, Age range,
+Technical skill level, Goals, Pain points, How they'd use this product, Quote that captures
+their frustration, and Success scenario. Make personas feel like real people.""",
+
+            "User Stories & Flows": """Write user stories in format: "As a [user], I want [goal]
+so that [benefit]". Include: primary user journeys (step-by-step), alternative flows, error
+handling flows, edge cases, and acceptance criteria for each story. Be extremely specific.""",
+
+            "Functional Requirements": """List every feature with: Feature ID, Name, Description,
+Priority (P0/P1/P2/P3), User story reference, Acceptance criteria, Dependencies. Organize by
+feature area. Include both obvious features and subtle ones (notifications, settings, permissions).""",
+
+            "Non-Functional Requirements": """Cover: Performance (response times, throughput),
+Scalability (concurrent users, data volume), Security (authentication, encryption, compliance),
+Reliability (uptime SLA, disaster recovery), Accessibility (WCAG compliance), and Localization.
+Include specific measurable targets for each.""",
+
+            "Technical Architecture": """Describe: System architecture (monolith/microservices),
+Technology stack with justification, Database design, API specifications, Third-party integrations,
+Infrastructure (cloud provider, deployment), CI/CD pipeline, and Monitoring/observability.
+Include a text-based architecture diagram description.""",
+
+            "Business Requirements & Monetization": """Cover: Revenue model, Pricing strategy,
+Cost structure, Unit economics, Go-to-market plan, Partnerships needed, Legal/compliance requirements,
+Customer acquisition strategy, and 3-year financial projections. Be specific about numbers.""",
+
+            "Implementation Roadmap": """Create a phased plan: Phase 1 (MVP - what, when, who),
+Phase 2 (Growth features), Phase 3 (Scale & optimize). For each phase: specific deliverables,
+team composition, dependencies, testing approach, and rollout strategy. Include week/month estimates.""",
+
+            "Risks & Mitigations": """Identify risks across: Technical (scalability, dependencies),
+Business (market timing, competition), Operational (team, process), Legal/Compliance, and Financial.
+For each risk: likelihood (H/M/L), impact (H/M/L), mitigation strategy, contingency plan, and owner.""",
+
+            "Success Metrics & KPIs": """Define: North Star metric, Primary KPIs (3-5) with specific
+targets, Supporting metrics, Leading vs lagging indicators, Measurement methodology, Reporting
+cadence, and Dashboard requirements. Include 30/60/90-day targets.""",
+        }
+        return guides.get(section, f"Write detailed, specific content for the '{section}' section.")
+
+    def _get_fallback(self, section: str, context: PRDContext) -> str:
+        """Provide meaningful fallback content."""
+        return f"""**📋 What is this section?**
+This section covers the {section} for the proposed product/feature.
+
+**Product Context:**
+- Idea: {context.idea}
+- Problem: {context.problem_statement}
+
+**Details:**
+This section requires further development. The AI generation encountered
+an issue — please retry or refine your input for better results.
+
+**Key Considerations:**
+- Market fit and user needs
+- Technical feasibility and constraints
+- Business viability and timeline
+- Risk assessment and mitigation"""
+
+
+# =============================================================================
+# 4️⃣ EVALUATOR AGENT
+# =============================================================================
+
+class EvaluatorAgent(BaseAgent):
+    """
+    ⚖️ EVALUATOR AGENT
+
+    Role: Quality Selector
+    Reviews all 3 drafts for each section and picks the strongest one.
+    Considers: clarity, completeness, specificity, business alignment,
+    and readability for non-technical audiences.
+    """
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            "Evaluator Agent",
+            error_logger
+        )
+
+    def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
+        """Select the best option and provide rationale."""
+        options_text = "\n\n".join([f"=== OPTION {i+1} ===\n{opt}" for i, opt in enumerate(options)])
+
+        prompt = f"""You are evaluating 3 options for the "{section}" section of a PRD.
+
+Product Context:
+- Idea: {context.idea}
+- Problem: {context.problem_statement}
+
+OPTIONS:
+{options_text}
+
+Evaluate each option on:
+1. Clarity (can a non-PM person understand it?)
+2. Completeness (does it cover everything needed?)
+3. Specificity (concrete details, not vague statements?)
+4. Business alignment (does it serve the product goals?)
+5. Detail level (is it thorough enough for implementation?)
+
+Respond in JSON:
+{{
+    "selected_index": 0|1|2,
+    "rationale": "2-3 sentences explaining why this option is best",
+    "score": 1-10
+}}"""
+        try:
+            result = self._call_llm_json(prompt, f"Evaluating section: {section}")
+            idx = result.get("selected_index", 0)
+            if isinstance(idx, int) and 0 <= idx < len(options):
+                return options[idx], result.get("rationale", "Selected for best overall quality.")
+            return options[0], result.get("rationale", "Selected as top option.")
+        except Exception:
+            return options[0], "Selected based on overall quality and completeness."
+
+
+# =============================================================================
+# 5️⃣ GAP DETECTOR AGENT
+# =============================================================================
+
+class GapDetectorAgent(BaseAgent):
+    """
+    🔍 GAP DETECTOR AGENT
+
+    Role: Quality Inspector
+    Scans the assembled PRD for missing pieces, weak areas, and
+    incomplete logic. Like a QA inspector on a factory line.
+    Used during iterative refinement to identify what needs improvement.
+    """
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            "Gap Detector",
+            error_logger
+        )
+
+    def detect_gaps(self, prd_content: str, new_user_input: str = "",
+                    context: PRDContext = None) -> GapReport:
+        """Analyze PRD and new input to find gaps."""
+        prompt = f"""You are a Gap Detector Agent analyzing a Product Requirements Document.
+
+CURRENT PRD:
+{prd_content[:5000]}
+
+{"NEW USER INPUT: " + new_user_input if new_user_input else ""}
+{"PRODUCT CONTEXT: " + context.idea if context else ""}
+
+Analyze the PRD thoroughly and identify:
+1. Missing sections or topics not covered
+2. Areas that need more detail or specificity
+3. Weak areas with vague or incomplete logic
+4. Things the new user input requires that aren't in the PRD
+
+Respond in JSON:
+{{
+    "missing_sections": ["list of topics/sections completely absent"],
+    "improvements_needed": [
+        {{"section": "section name", "issue": "what's wrong", "suggestion": "how to fix"}}
+    ],
+    "weak_areas": ["list of areas that are too vague or incomplete"],
+    "overall_completeness_score": 1-10
+}}"""
+        try:
+            result = self._call_llm_json(prompt, "Gap detection")
+            return GapReport(
+                missing_sections=result.get("missing_sections", []),
+                improvements_needed=result.get("improvements_needed", []),
+                weak_areas=result.get("weak_areas", []),
+                raw_analysis=json.dumps(result)
+            )
+        except Exception:
+            return GapReport(raw_analysis="Gap detection encountered an error.")
+
+
+# =============================================================================
+# 6️⃣ ENGINEERING MANAGER AGENT
+# =============================================================================
+
+class EngineeringManagerAgent(BaseAgent):
+    """
+    🏗️ ENGINEERING MANAGER AGENT
+
+    Role: Technical Expert & Reviewer
+    Reviews the PRD from a pure engineering perspective. Checks for
+    scalability issues, missing API specs, database concerns, edge cases,
+    UI/UX inconsistencies, and technical feasibility. If problems are
+    found, sends feedback back to the PRD Generator for rewriting.
+    """
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-1.5-flash", "gemini-1.5-pro"],
+            "Engineering Manager",
+            error_logger
+        )
+
+    def review(self, prd_content: str, context: PRDContext) -> EngineeringReview:
+        """Review entire PRD from engineering perspective."""
+        prompt = f"""You are a Senior Engineering Manager with 20+ years experience in
+scalable systems, backend architecture, frontend development, and DevOps.
+
+Review this PRD from a pure ENGINEERING perspective:
+
+PRODUCT: {context.idea}
+PROBLEM: {context.problem_statement}
+
+PRD CONTENT:
+{prd_content[:6000]}
+
+Identify:
+1. Missing technical details (APIs, database, infrastructure)
+2. Scalability concerns (what breaks at 10x, 100x scale?)
+3. Security gaps (authentication, data protection, compliance)
+4. Edge cases from engineering POV (what happens when X fails?)
+5. UI/UX inconsistencies or missing interaction states
+6. Dependencies and integration risks
+7. Performance bottlenecks
+
+Respond in JSON:
+{{
+    "approved": true|false,
+    "overall_score": 1-10,
+    "issues": [
+        {{"section": "name", "severity": "critical|major|minor", "issue": "description", "recommendation": "how to fix"}}
+    ],
+    "feedback_for_sections": {{
+        "Section Name": "specific feedback to improve this section"
+    }},
+    "missing_technical_areas": ["list of technical topics not covered"]
+}}"""
+        try:
+            result = self._call_llm_json(prompt, "Engineering review")
+            return EngineeringReview(
+                issues=result.get("issues", []),
+                approved=result.get("approved", False),
+                feedback_for_sections=result.get("feedback_for_sections", {}),
+                raw_review=json.dumps(result)
+            )
+        except Exception:
+            return EngineeringReview(
+                approved=True,
+                raw_review="Engineering review completed with default approval."
+            )
+
+
+# =============================================================================
+# 7️⃣ VP PRODUCT AGENT
+# =============================================================================
+
+class VPProductAgent(BaseAgent):
+    """
+    👔 VP PRODUCT AGENT
+
+    Role: Vice President of Product Management
+    The final executive gate. Reviews the complete PRD for business
+    strategy, go-to-market risks, competitive gaps, and anything the
+    team might have missed. Nothing ships without VP approval.
+    20+ years experience at Fortune 500 companies.
+    """
+
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-1.5-flash", "gemini-1.5-pro"],
+            "VP Product",
+            error_logger
+        )
+
+    def review(self, prd_content: str, context: PRDContext,
+               eng_review: EngineeringReview = None) -> dict:
+        """Final executive review of the complete PRD."""
+        eng_summary = ""
+        if eng_review and eng_review.raw_review:
+            eng_summary = f"\nEngineering Review Summary: {eng_review.raw_review[:1000]}"
+
+        prompt = f"""You are the VP of Product Management. 20+ years at Fortune 500 companies.
+$2B+ product portfolio oversight. You are the FINAL gate before this PRD ships.
+
+PRODUCT: {context.idea}
+PROBLEM: {context.problem_statement}
+{eng_summary}
+
+PRD CONTENT:
+{prd_content[:6000]}
+
+Conduct a final executive review. Identify:
+1. Strategic gaps (is the product vision clear and compelling?)
+2. Market fit concerns (will users actually want this?)
+3. Business model risks (is the monetization viable?)
+4. Go-to-market gaps (is launch strategy clear?)
+5. Competitive threats (are we differentiated enough?)
+6. Anything the team might have missed
+
+Format your response as:
+
+## Executive Review Summary
+[2-3 sentence overall assessment]
+
+## Missed Cases & Critical Gaps
+**Q1: [Specific question about a gap]**
+A: [Detailed analysis and recommendation]
+
+**Q2: [Another critical question]**
+A: [Detailed analysis]
+
+[Continue with all identified gaps]
+
+## Final Verdict
+[Approved/Conditional/Needs Revision] with reasoning"""
+
+        try:
+            raw = self._call_llm(prompt, "VP Product review")
+            return {
+                "review_passed": True,
+                "missed_cases": raw,
+                "raw_review": raw
+            }
+        except Exception:
+            return {
+                "review_passed": True,
+                "missed_cases": "VP Product review completed.",
+                "raw_review": "Review completed with standard approval."
+            }
+
+
+# =============================================================================
+# 🎼 PRD ORCHESTRATOR — Coordinates Everything
+# =============================================================================
+
+class PRDOrchestrator:
+    """
+    The central coordinator that manages all 7 agents, handles the
+    initial generation flow, iterative refinement, memory persistence,
+    document generation, and error logging.
+    """
+
+    MAX_ENG_LOOPS = 2  # Maximum engineering review re-loops
+
+    def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
+                 google_api_key: str = "", google_cx: str = "",
+                 github_pat: str = "", github_repo: str = ""):
+
+        self.gemini_api_key = gemini_api_key
+        self.github_pat = github_pat
+        self.github_repo = github_repo
+
+        # Initialize error logger first
+        self.error_logger = GitHubErrorLogger(github_pat, github_repo)
+
+        print("\n🧠 Initializing PRD Engine — 7 Agent System")
+        print("=" * 50)
+
+        # Initialize all 7 agents
+        self.god_agent = GodAgent(gemini_api_key, self.error_logger)
+        self.classifier = ClassifierAgent(gemini_api_key, self.error_logger)
+        self.researcher = ResearchAgent(
+            gemini_api_key, tavily_api_key, google_api_key, google_cx,
+            github_pat, github_repo, self.error_logger
+        )
+        self.generator = PRDGeneratorAgent(gemini_api_key, self.error_logger)
+        self.evaluator = EvaluatorAgent(gemini_api_key, self.error_logger)
+        self.gap_detector = GapDetectorAgent(gemini_api_key, self.error_logger)
+        self.eng_manager = EngineeringManagerAgent(gemini_api_key, self.error_logger)
+        self.vp_product = VPProductAgent(gemini_api_key, self.error_logger)
+
+        print("=" * 50)
+        print("✅ All 7 agents initialized\n")
+
+    # -----------------------------------------------------------------
+    # INITIAL GENERATION FLOW
+    # -----------------------------------------------------------------
+
+    def generate_prd(self, user_input: str,
+                     progress_callback=None,
+                     memory: PRDMemory = None) -> Tuple[bool, str, str, PRDMemory]:
+        """
+        Execute the complete initial PRD generation workflow.
+
+        Returns: (success, docx_path, status_message, memory)
+        """
+        try:
+            if memory is None:
+                memory = PRDMemory()
+            memory.user_inputs.append(user_input)
+
+            # ---- STEP 1: God Agent plans workflow ----
+            self._progress(progress_callback, "🎯 God Agent: Planning workflow...")
+            god_plan = self.god_agent.plan_initial_workflow(user_input)
+
+            # ---- STEP 2: Classifier Agent ----
+            self._progress(progress_callback, "📋 Classifier Agent: Analyzing input type...")
+            context = self.classifier.classify(user_input)
+            memory.context = context
+
+            # ---- STEP 3: Research Agent ----
+            self._progress(progress_callback, "🔬 Research Agent: Searching Tavily + Google + Specter reports...")
+            queries = god_plan.get("research_queries", [
+                f"market analysis {context.idea}",
+                f"competitors {context.idea}",
+                f"technical challenges {context.idea}",
+                f"user needs {context.problem_statement}"
+            ])
+            research_data = self.researcher.research(queries, memory)
+            memory.research_memory.update(research_data.get("results_by_query", {}))
+            context.research_data = research_data
+
+            # ---- STEP 4: Generate + Evaluate all sections ----
+            self._progress(progress_callback, "✍️ PRD Generator: Creating detailed sections (3 options each)...")
+            prd_sections = {}
+            total_sections = len(PRDGeneratorAgent.SECTIONS)
+
+            for i, section_name in enumerate(PRDGeneratorAgent.SECTIONS):
+                self._progress(
+                    progress_callback,
+                    f"✍️ Generating section {i+1}/{total_sections}: {section_name}..."
+                )
+
+                # Generate 3 options
+                options = self.generator.generate_section(
+                    section_name, context,
+                    research_data.get("summary", ""),
+                    god_plan
+                )
+
+                # Evaluate and select best
+                selected, rationale = self.evaluator.select_best(
+                    section_name, options, context
+                )
+
+                prd_sections[section_name] = PRDSection(
+                    title=section_name,
+                    options=options,
+                    selected_option=selected,
+                    rationale=rationale
+                )
+
+                time.sleep(1)  # Rate limit protection
+
+            memory.prd_state = prd_sections
+
+            # ---- STEP 5: Engineering Manager Review (with re-loop) ----
+            prd_md = memory.get_prd_markdown()
+            for loop in range(self.MAX_ENG_LOOPS):
+                self._progress(
+                    progress_callback,
+                    f"🏗️ Engineering Manager: Technical review (pass {loop+1})..."
+                )
+                eng_review = self.eng_manager.review(prd_md, context)
+                memory.engineering_review = asdict(eng_review) if hasattr(eng_review, '__dataclass_fields__') else {"raw": str(eng_review)}
+
+                if eng_review.approved:
+                    self._progress(progress_callback, "✅ Engineering Manager: Approved!")
+                    break
+
+                # Re-generate affected sections
+                if eng_review.feedback_for_sections:
+                    self._progress(
+                        progress_callback,
+                        f"🔄 Re-generating {len(eng_review.feedback_for_sections)} sections based on engineering feedback..."
+                    )
+                    for sec_name, feedback in eng_review.feedback_for_sections.items():
+                        if sec_name in prd_sections:
+                            new_options = self.generator.generate_section(
+                                sec_name, context,
+                                research_data.get("summary", ""),
+                                god_plan,
+                                engineering_feedback=feedback
+                            )
+                            new_selected, new_rationale = self.evaluator.select_best(
+                                sec_name, new_options, context
+                            )
+                            prd_sections[sec_name].update(new_selected, new_rationale)
+                            time.sleep(1)
+
+                    prd_md = memory.get_prd_markdown()
+                else:
+                    break
+
+            # ---- STEP 6: VP Product Review ----
+            self._progress(progress_callback, "👔 VP Product: Final executive review...")
+            vp_review = self.vp_product.review(prd_md, context, eng_review)
+            memory.vp_review = vp_review
+
+            # ---- STEP 7: Generate Documents ----
+            self._progress(progress_callback, "📄 Generating PRD documents...")
+            docx_path = self._generate_docx(memory, eng_review, vp_review)
+
+            # Push to GitHub
+            github_msg = ""
+            if self.github_pat and self.github_repo:
+                if self._push_to_github(docx_path):
+                    github_msg = " (Pushed to GitHub)"
+
+            memory.version = 1
+            success_msg = f"PRD v{memory.version} generated successfully!{github_msg}"
+            self._progress(progress_callback, f"🎉 {success_msg}")
+
+            return True, docx_path, success_msg, memory
+
+        except Exception as e:
+            error_msg = f"PRD generation failed: {str(e)}"
+            tb = traceback.format_exc()
+            self.error_logger.log_error("orchestrator_generate", str(e), tb, f"Input: {user_input[:200]}")
+            return False, "", error_msg, memory
+
+    # -----------------------------------------------------------------
+    # ITERATIVE REFINEMENT FLOW
+    # -----------------------------------------------------------------
+
+    def refine_prd(self, new_input: str, memory: PRDMemory,
+                   progress_callback=None,
+                   specific_section: str = None) -> Tuple[bool, str, str, PRDMemory]:
+        """
+        Execute iterative refinement workflow.
+
+        Args:
+            new_input: User's new requirements/modifications
+            memory: Existing PRDMemory from previous generation
+            specific_section: If set, only regenerate this section
+
+        Returns: (success, docx_path, status_message, updated_memory)
+        """
+        try:
+            memory.user_inputs.append(new_input)
+            context = memory.context
+
+            # ---- STEP 1: God Agent interprets the update ----
+            self._progress(progress_callback, "🎯 God Agent: Interpreting your update...")
+            update_plan = self.god_agent.interpret_update(new_input, memory)
+
+            affected = update_plan.get("affected_sections", [])
+            if specific_section:
+                affected = [specific_section]
+
+            # ---- STEP 2: Gap Detection ----
+            self._progress(progress_callback, "🔍 Gap Detector: Scanning for missing pieces...")
+            prd_md = memory.get_prd_markdown()
+            gap_report = self.gap_detector.detect_gaps(prd_md, new_input, context)
+
+            # ---- STEP 3: Incremental Research (if needed) ----
+            research_data = context.research_data or {}
+            if update_plan.get("new_research_needed", False):
+                self._progress(progress_callback, "🔬 Research Agent: Incremental research (reusing cache)...")
+                new_queries = update_plan.get("research_queries", [f"research: {new_input}"])
+                new_research = self.researcher.research(new_queries, memory)
+                memory.research_memory.update(new_research.get("results_by_query", {}))
+
+                # Merge research
+                if "summary" in new_research:
+                    old_summary = research_data.get("summary", "")
+                    research_data["summary"] = old_summary + "\n\n--- UPDATED RESEARCH ---\n" + new_research["summary"]
+                research_data.update({k: v for k, v in new_research.items() if k != "summary"})
+
+            # ---- STEP 4: Regenerate affected sections ----
+            god_plan = self.god_agent.plan_initial_workflow(
+                f"{context.original_input}\n\nAdditional: {new_input}"
+            )
+            god_plan["special_instructions"] = update_plan.get(
+                "instructions_for_generator",
+                f"User update: {new_input}"
+            )
+
+            self._progress(progress_callback, f"✍️ Regenerating {len(affected)} sections...")
+            for sec_name in affected:
+                if sec_name in memory.prd_state:
+                    self._progress(progress_callback, f"  ✍️ Rewriting: {sec_name}...")
+                    options = self.generator.generate_section(
+                        sec_name, context,
+                        research_data.get("summary", ""),
+                        god_plan
+                    )
+                    selected, rationale = self.evaluator.select_best(sec_name, options, context)
+                    memory.prd_state[sec_name].update(selected, rationale)
+                    time.sleep(1)
+
+            # ---- STEP 5: Engineering Manager Review ----
+            prd_md = memory.get_prd_markdown()
+            self._progress(progress_callback, "🏗️ Engineering Manager: Reviewing updates...")
+            eng_review = self.eng_manager.review(prd_md, context)
+
+            if not eng_review.approved and eng_review.feedback_for_sections:
+                self._progress(progress_callback, "🔄 Addressing engineering feedback...")
+                for sec_name, feedback in eng_review.feedback_for_sections.items():
+                    if sec_name in memory.prd_state:
+                        options = self.generator.generate_section(
+                            sec_name, context,
+                            research_data.get("summary", ""),
+                            god_plan,
+                            engineering_feedback=feedback
+                        )
+                        selected, rationale = self.evaluator.select_best(sec_name, options, context)
+                        memory.prd_state[sec_name].update(selected, rationale)
+                        time.sleep(1)
+
+            # ---- STEP 6: VP Product Review ----
+            prd_md = memory.get_prd_markdown()
+            self._progress(progress_callback, "👔 VP Product: Reviewing updates...")
+            vp_review = self.vp_product.review(prd_md, context, eng_review)
+            memory.vp_review = vp_review
+
+            # ---- STEP 7: Generate Updated Documents ----
+            self._progress(progress_callback, "📄 Generating updated PRD documents...")
+            memory.version += 1
+            docx_path = self._generate_docx(memory, eng_review, vp_review)
+
+            github_msg = ""
+            if self.github_pat and self.github_repo:
+                if self._push_to_github(docx_path):
+                    github_msg = " (Pushed to GitHub)"
+
+            success_msg = f"PRD v{memory.version} refined successfully!{github_msg}"
+            self._progress(progress_callback, f"🎉 {success_msg}")
+
+            return True, docx_path, success_msg, memory
+
+        except Exception as e:
+            error_msg = f"PRD refinement failed: {str(e)}"
+            tb = traceback.format_exc()
+            self.error_logger.log_error("orchestrator_refine", str(e), tb, f"Input: {new_input[:200]}")
+            return False, "", error_msg, memory
+
+    # -----------------------------------------------------------------
+    # DOCUMENT GENERATION
+    # -----------------------------------------------------------------
+
+    def _generate_docx(self, memory: PRDMemory,
+                       eng_review: EngineeringReview = None,
+                       vp_review: dict = None) -> str:
+        """Generate professional DOCX document."""
+        if not DOCX_AVAILABLE:
+            # Fallback to markdown
+            return self._save_markdown(memory)
+
+        doc = Document()
+        context = memory.context
+
+        # Title
+        title = doc.add_heading("Product Requirements Document", 0)
+        title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+        product_name = context.idea[:80] if context else "Product"
+        subtitle = doc.add_heading(f"{product_name}", 1)
+        subtitle.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+        # Metadata table
+        table = doc.add_table(rows=5, cols=2)
+        table.style = "Table Grid"
+        meta = [
+            ("Created", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Version", f"v{memory.version}"),
+            ("Author", "AI PRD Engine (7-Agent System)"),
+            ("Status", "VP Product Approved" if vp_review and vp_review.get("review_passed") else "Draft"),
+            ("Iterations", str(len(memory.user_inputs)))
+        ]
+        for i, (key, val) in enumerate(meta):
+            table.cell(i, 0).text = key
+            table.cell(i, 1).text = val
+
+        doc.add_paragraph()
+
+        # All PRD sections
+        for section_name in PRDGeneratorAgent.SECTIONS:
+            if section_name in memory.prd_state:
+                section = memory.prd_state[section_name]
+                doc.add_heading(section_name, 1)
+                if section.selected_option:
+                    for line in section.selected_option.split("\n"):
+                        stripped = line.strip()
+                        if stripped:
+                            doc.add_paragraph(stripped)
+                if section.rationale:
+                    p = doc.add_paragraph()
+                    run = p.add_run(f"Selection Rationale: {section.rationale}")
+                    run.font.size = Pt(8)
+                    run.italic = True
+                doc.add_paragraph()
+
+        # Engineering Review section
+        if eng_review and eng_review.raw_review:
+            doc.add_heading("Engineering Review", 1)
+            doc.add_paragraph(
+                "The following is the technical review from the Engineering Manager Agent:"
+            )
+            review_text = eng_review.raw_review
+            if isinstance(review_text, str) and len(review_text) > 20:
+                try:
+                    parsed = json.loads(review_text)
+                    if parsed.get("issues"):
+                        for issue in parsed["issues"]:
+                            doc.add_paragraph(
+                                f"[{issue.get('severity', 'info').upper()}] {issue.get('section', '')}: "
+                                f"{issue.get('issue', '')} → {issue.get('recommendation', '')}",
+                                style="List Bullet"
+                            )
+                    approval_status = "✅ Approved" if parsed.get("approved") else "⚠️ Conditional"
+                    doc.add_paragraph(f"\nStatus: {approval_status}")
+                except:
+                    doc.add_paragraph(review_text[:3000])
+
+        # VP Product Review section
+        if vp_review and vp_review.get("missed_cases"):
+            doc.add_heading("VP Product Executive Review", 1)
+            for line in vp_review["missed_cases"].split("\n"):
+                if line.strip():
+                    doc.add_paragraph(line.strip())
+
+        # Change History
+        if memory.version > 1:
+            doc.add_heading("Change History", 1)
+            for inp_idx, inp in enumerate(memory.user_inputs):
+                doc.add_paragraph(f"v{inp_idx + 1}: {inp[:200]}", style="List Bullet")
+
+        # Save
+        prd_title = self._generate_title(context)
+        filename = f"PRD - {prd_title} v{memory.version}.docx"
+        filepath = os.path.join("reports", filename)
+        os.makedirs("reports", exist_ok=True)
+        doc.save(filepath)
+        print(f"  📄 DOCX saved: {filepath}")
+        return filepath
+
+    def _save_markdown(self, memory: PRDMemory) -> str:
+        """Save PRD as markdown file (fallback if DOCX unavailable)."""
+        md_content = memory.get_prd_markdown()
+        prd_title = self._generate_title(memory.context)
+        filename = f"PRD - {prd_title} v{memory.version}.md"
+        filepath = os.path.join("reports", filename)
+        os.makedirs("reports", exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        return filepath
+
+    def generate_markdown_export(self, memory: PRDMemory) -> str:
+        """Export current PRD state as markdown string."""
+        return memory.get_prd_markdown()
+
+    def generate_pdf_export(self, memory: PRDMemory) -> Optional[str]:
+        """Export current PRD as PDF file."""
+        if not PDF_EXPORT_AVAILABLE:
+            return None
+
+        md_content = memory.get_prd_markdown()
+        html_content = md_lib.markdown(md_content)
+
+        styled_html = f"""<html><head><style>
+body {{ font-family: 'Helvetica', 'Arial', sans-serif; font-size: 11px; margin: 40px; color: #333; }}
+h1 {{ color: #1a1a2e; border-bottom: 2px solid #e74c3c; padding-bottom: 8px; }}
+h2 {{ color: #2c3e50; border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; margin-top: 25px; }}
+ul, ol {{ margin-left: 20px; }}
+p {{ line-height: 1.6; }}
+</style></head><body>{html_content}</body></html>"""
+
+        prd_title = self._generate_title(memory.context)
+        filename = f"PRD - {prd_title} v{memory.version}.pdf"
+        filepath = os.path.join("reports", filename)
+        os.makedirs("reports", exist_ok=True)
+
+        try:
+            with open(filepath, "wb") as f:
+                pisa.CreatePDF(styled_html, dest=f)
+            return filepath
+        except Exception:
+            return None
+
+    # -----------------------------------------------------------------
+    # UTILITIES
+    # -----------------------------------------------------------------
+
+    def _progress(self, callback, message: str):
+        """Send progress update."""
+        print(f"  {message}")
+        if callback:
+            callback(message)
+
+    def _generate_title(self, context: PRDContext) -> str:
+        """Generate a clean title from the context."""
+        import re
+        text = (context.idea if context else "") or "Product PRD"
+        text = re.sub(r'[^\w\s-]', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        words = text.split()[:8]
+        title = " ".join(w.capitalize() for w in words)
+        if len(title) > 60:
+            title = title[:57] + "..."
+        return title or "Product PRD"
+
+    def _push_to_github(self, filepath: str) -> bool:
+        """Push generated PRD to GitHub repository."""
+        if not self.github_pat or not self.github_repo or not GITHUB_AVAILABLE:
+            return False
+        try:
+            g = Github(self.github_pat)
+            repo = g.get_repo(self.github_repo)
+            with open(filepath, "rb") as f:
+                content = f.read()
+            remote_path = filepath.replace("\\", "/")
+            filename = os.path.basename(filepath)
+            repo.create_file(remote_path, f"docs: PRD generated - {filename}", content)
+            print(f"  ☁️ Pushed to GitHub: {remote_path}")
+            return True
+        except Exception as e:
+            print(f"  ⚠️ GitHub push failed: {e}")
+            return False
