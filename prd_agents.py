@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-import google.genai as genai
+import google.generativeai as genai
 from tavily import TavilyClient
 from docx import Document
 from docx.shared import Inches, Pt
@@ -71,9 +71,9 @@ class PRDResearcher:
     """
 
     def __init__(self, gemini_api_key: str, tavily_api_key: str, google_api_key: str = None, google_cx: str = None):
-        # Initialize Gemini client
-        self.gemini_client = genai.Client(api_key=gemini_api_key)
-        self.gemini_model = self.gemini_client.models.generate_content
+        # Configure Gemini for analysis
+        genai.configure(api_key=gemini_api_key)
+        self.gemini_model = genai.GenerativeModel('gemini-1.5-pro')
 
         # Initialize search clients
         self.tavily_client = TavilyClient(api_key=tavily_api_key)
@@ -102,10 +102,7 @@ class PRDResearcher:
         """
 
         try:
-            response = self.gemini_client.models.generate_content(
-                model='gemini-1.5-pro',
-                contents=prompt
-            )
+            response = self.gemini_model.generate_content(prompt)
             result = json.loads(response.text.strip())
 
             return PRDContext(
@@ -252,9 +249,9 @@ class PRDMaker:
     """
 
     def __init__(self, gemini_api_key: str):
-        self.gemini_client = genai.Client(api_key=gemini_api_key)
-        self.main_model = self.gemini_client.models.generate_content
-        self.selection_model = self.gemini_client.models.generate_content  # Using same client for now
+        genai.configure(api_key=gemini_api_key)
+        self.main_model = genai.GenerativeModel('gemini-1.5-pro')
+        self.selection_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
         # PRD sections in standard order (based on sample PRD analysis)
         self.sections = [
@@ -431,10 +428,7 @@ class PRDMaker:
         """
 
         try:
-            response = self.gemini_client.models.generate_content(
-                model='gemini-1.5-pro',
-                contents=prompt
-            )
+            response = self.main_model.generate_content(prompt)
             content = response.text.strip()
 
             # Split into 3 options (assuming they're separated by clear markers)
@@ -471,10 +465,7 @@ class PRDMaker:
         """
 
         try:
-            response = self.gemini_client.models.generate_content(
-                model='gemini-2.0-flash-exp',
-                contents=prompt
-            )
+            response = self.selection_model.generate_content(prompt)
             result = json.loads(response.text.strip())
 
             selected_option = options[result["selected_index"]]
@@ -575,8 +566,8 @@ class VPProduct:
     """
 
     def __init__(self, gemini_api_key: str):
-        self.gemini_client = genai.Client(api_key=gemini_api_key)
-        self.model = self.gemini_client.models.generate_content
+        genai.configure(api_key=gemini_api_key)
+        self.model = genai.GenerativeModel('gemini-1.5-pro')
 
     def review_prd(self, prd_sections: Dict[str, PRDSection], context: PRDContext) -> Dict[str, any]:
         """
@@ -621,10 +612,7 @@ class VPProduct:
         """
 
         try:
-            response = self.gemini_client.models.generate_content(
-                model='gemini-1.5-pro',
-                contents=prompt
-            )
+            response = self.model.generate_content(prompt)
             missed_cases_content = response.text.strip()
 
             return {
