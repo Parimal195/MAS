@@ -1025,23 +1025,8 @@ cadence, and Dashboard requirements. Include 30/60/90-day targets.""",
         return guides.get(section, f"Write detailed, specific content for the '{section}' section.")
 
     def _get_fallback(self, section: str, context: PRDContext) -> str:
-        """Provide meaningful fallback content."""
-        return f"""**📋 What is this section?**
-This section covers the {section} for the proposed product/feature.
-
-**Product Context:**
-- Idea: {context.idea}
-- Problem: {context.problem_statement}
-
-**Details:**
-This section requires further development. The AI generation encountered
-an issue — please retry or refine your input for better results.
-
-**Key Considerations:**
-- Market fit and user needs
-- Technical feasibility and constraints
-- Business viability and timeline
-- Risk assessment and mitigation"""
+        """DEPRECATED: This method now raises error to trigger global switch."""
+        raise RuntimeError(f"Fallback called for {section} - This should not happen!")
 
 
 # =============================================================================
