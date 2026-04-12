@@ -40,6 +40,14 @@ from copy import deepcopy
 
 import google.generativeai as genai
 
+# ChatGPT OpenAI imports (fallback when Gemini quota exhausted)
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    print("⚠️ openai not installed — ChatGPT fallback disabled")
+
 # Optional imports with graceful fallback
 try:
     from tavily import TavilyClient
@@ -236,12 +244,16 @@ class BaseAgent:
     """Shared agent infrastructure — model initialization with fallback."""
 
     def __init__(self, gemini_api_key: str, preferred_models: List[str],
-                 agent_name: str, error_logger: GitHubErrorLogger = None):
+                 agent_name: str, error_logger: GitHubErrorLogger = None,
+                 openai_api_key: str = None):
         genai.configure(api_key=gemini_api_key)
         self.agent_name = agent_name
         self.error_logger = error_logger
         self.model = None
+        self.openai_model = None
+        self.using_openai_fallback = False
 
+        # Initialize Gemini models
         for model_name in preferred_models:
             try:
                 self.model = genai.GenerativeModel(model_name)
@@ -256,17 +268,49 @@ class BaseAgent:
                 self.model = genai.GenerativeModel("gemini-2.0-flash-lite")
                 print(f"  ⚠️ {agent_name} → gemini-2.0-flash-lite (fallback)")
             except Exception:
-                raise Exception(f"{agent_name}: No compatible Gemini models available.")
+                # Try ChatGPT fallback if Gemini fails
+                if openai_api_key and OPENAI_AVAILABLE:
+                    try:
+                        self.openai_model = openai.OpenAI(api_key=openai_api_key)
+                        self.using_openai_fallback = True
+                        print(f"  ⚠️ {agent_name} → Using ChatGPT fallback (gpt-4o-mini)")
+                    except Exception as e:
+                        print(f"  ❌ ChatGPT fallback failed: {e}")
+                        raise Exception(f"{agent_name}: No compatible Gemini models available.")
+                else:
+                    raise Exception(f"{agent_name}: No compatible Gemini models available.")
 
     def _call_llm(self, prompt: str, context: str = "", max_retries: int = 4) -> str:
         """Call the LLM with retry logic, rate-limit awareness, and error logging."""
         for attempt in range(max_retries):
             try:
+                # Use ChatGPT if in fallback mode
+                if self.using_openai_fallback and self.openai_model:
+                    response = self.openai_model.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    return response.choices[0].message.content.strip()
+                
+                # Default Gemini
                 response = self.model.generate_content(prompt)
                 return response.text.strip()
             except Exception as e:
                 error_str = str(e)
                 is_rate_limit = "429" in error_str or "ResourceExhausted" in error_str
+                
+                # Try ChatGPT fallback on quota error
+                if is_rate_limit and not self.using_openai_fallback:
+                    openai_key = os.environ.get("OPENAI_API_KEY", "")
+                    if openai_key and OPENAI_AVAILABLE:
+                        try:
+                            self.openai_model = openai.OpenAI(api_key=openai_key)
+                            self.using_openai_fallback = True
+                            print(f"  ⚠️ {self.agent_name} → Quota exceeded, switching to ChatGPT fallback")
+                            continue  # Retry with ChatGPT
+                        except Exception as oe:
+                            print(f"  ⚠️ ChatGPT fallback init failed: {oe}")
+                    
                 if attempt < max_retries - 1:
                     # Use longer waits for rate limiting (Google suggests ~37s)
                     if is_rate_limit:
@@ -337,12 +381,13 @@ class GodAgent(BaseAgent):
     - ALWAYS prefer partial updates over full regeneration
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "God Agent",
-            error_logger
+            error_logger,
+            openai_api_key
         )
 
     def plan_initial_workflow(self, user_input: str) -> dict:
@@ -494,12 +539,13 @@ class ClassifierAgent(BaseAgent):
     - Mixed → choose dominant intent
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Classifier Agent",
-            error_logger
+            error_logger,
+            openai_api_key
         )
 
     def classify(self, user_input: str) -> PRDContext:
@@ -803,12 +849,13 @@ class PRDGeneratorAgent(BaseAgent):
         "Success Metrics & KPIs",
     ]
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "PRD Generator",
-            error_logger
+            error_logger,
+            openai_api_key
         )
 
     def generate_section(self, section: str, context: PRDContext,
@@ -870,8 +917,29 @@ Each option must be labeled and distinct. No repetition across options.
             options = self._parse_three_options(raw)
             return options
         except Exception as e:
-            print(f"  ❌ PRD Generator FAILED for '{section}': {str(e)[:200]}")
-            fallback = self._get_fallback(section, context)
+            error_msg = str(e)
+            print(f"  ❌ PRD Generator FAILED for '{section}': {error_msg[:200]}")
+            # Check for quota/rate limit errors
+            if "429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in error_msg:
+                fallback = f"""⚠️ API QUOTA EXCEEDED for section: {section}
+
+**What happened:** Your Google Gemini API free tier quota has been exhausted for today.
+
+**Solution:** 
+1. Wait 1-2 minutes and retry (quota refreshes automatically)
+2. OR upgrade to a paid plan at https://aistudio.google.com/app/apikeys
+
+**Context:** {context.idea[:100]}..."""
+            elif "not found" in error_msg and "model" in error_msg:
+                fallback = f"""⚠️ MODEL ERROR for section: {section}
+
+**What happened:** The model '{error_msg}' is unavailable or deprecated.
+
+**Solution:** Try again in a few minutes, or check your API key settings.
+
+**Context:** {context.idea[:100]}..."""
+            else:
+                fallback = self._get_fallback(section, context)
             return [fallback, fallback, fallback]
 
     def _parse_three_options(self, raw: str) -> List[str]:
@@ -1013,15 +1081,7 @@ class EvaluatorAgent(BaseAgent):
                   (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
-        super().__init__(
-            gemini_api_key,
-            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
-            "Evaluator Agent",
-            error_logger
-        )
-
-    def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
+def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
         """Select the best option using VP-level scoring."""
         options_text = "\n\n".join([f"=== OPTION {i+1} ===\n{opt}" for i, opt in enumerate(options)])
 
@@ -1100,12 +1160,13 @@ class GapDetectorAgent(BaseAgent):
     - Missing metrics
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Gap Detector",
-            error_logger
+            error_logger,
+            openai_api_key
         )
 
     def detect_gaps(self, prd_content: str, new_user_input: str = "",
@@ -1172,12 +1233,13 @@ class EngineeringManagerAgent(BaseAgent):
     RULE: If ANY critical gap exists → reject
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Engineering Manager",
-            error_logger
+            error_logger,
+            openai_api_key
         )
 
     def review(self, prd_content: str, context: PRDContext) -> EngineeringReview:
@@ -1251,12 +1313,13 @@ class VPProductAgent(BaseAgent):
     - Edge cases
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
+def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "VP Product",
-            error_logger
+            error_logger,
+            openai_api_key
         )
 
     def review(self, prd_content: str, context: PRDContext,
@@ -1342,7 +1405,8 @@ class PRDOrchestrator:
 
     def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
                  google_api_key: str = "", google_cx: str = "",
-                 github_pat: str = "", github_repo: str = ""):
+                 github_pat: str = "", github_repo: str = "",
+                 openai_api_key: str = None):
 
         self.gemini_api_key = gemini_api_key
         self.github_pat = github_pat
@@ -1354,18 +1418,18 @@ class PRDOrchestrator:
         print("\n🧠 Initializing PRD Engine — 7 Agent System")
         print("=" * 50)
 
-        # Initialize all 7 agents
-        self.god_agent = GodAgent(gemini_api_key, self.error_logger)
-        self.classifier = ClassifierAgent(gemini_api_key, self.error_logger)
+        # Initialize all 7 agents with ChatGPT fallback
+        self.god_agent = GodAgent(gemini_api_key, self.error_logger, openai_api_key)
+        self.classifier = ClassifierAgent(gemini_api_key, self.error_logger, openai_api_key)
         self.researcher = ResearchAgent(
             gemini_api_key, tavily_api_key, google_api_key, google_cx,
-            github_pat, github_repo, self.error_logger
+            github_pat, github_repo, self.error_logger, openai_api_key
         )
-        self.generator = PRDGeneratorAgent(gemini_api_key, self.error_logger)
-        self.evaluator = EvaluatorAgent(gemini_api_key, self.error_logger)
-        self.gap_detector = GapDetectorAgent(gemini_api_key, self.error_logger)
-        self.eng_manager = EngineeringManagerAgent(gemini_api_key, self.error_logger)
-        self.vp_product = VPProductAgent(gemini_api_key, self.error_logger)
+        self.generator = PRDGeneratorAgent(gemini_api_key, self.error_logger, openai_api_key)
+        self.evaluator = EvaluatorAgent(gemini_api_key, self.error_logger, openai_api_key)
+        self.gap_detector = GapDetectorAgent(gemini_api_key, self.error_logger, openai_api_key)
+        self.eng_manager = EngineeringManagerAgent(gemini_api_key, self.error_logger, openai_api_key)
+        self.vp_product = VPProductAgent(gemini_api_key, self.error_logger, openai_api_key)
 
         print("=" * 50)
         print("✅ All 7 agents initialized\n")

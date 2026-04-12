@@ -408,6 +408,34 @@ with tab_prd:
     st.markdown("### 📋 PRD Maker — Autonomous AI Product Team")
     st.markdown("**7 specialized AI agents** work together to research, write, review, and refine your Product Requirements Document — just like a real product team.")
 
+    # ---- API Keys Configuration ----
+    with st.expander("🔑 API Keys Configuration", expanded=True):
+        st.markdown("Configure your API keys. Keys stored in `.env` will be used automatically.")
+        
+        col_gemini, col_openai = st.columns(2)
+        with col_gemini:
+            gemini_key_input = st.text_input(
+                "Google Gemini API Key",
+                value=os.environ.get("GEMINI_API_KEY", ""),
+                type="password",
+                key="gemini_key_input"
+            )
+        with col_openai:
+            openai_key_input = st.text_input(
+                "OpenAI API Key (ChatGPT Fallback)",
+                value=os.environ.get("OPENAI_API_KEY", ""),
+                type="password",
+                key="openai_key_input"
+            )
+        
+        st.caption("💡 If Gemini quota is exhausted, ChatGPT will be used automatically as fallback.")
+
+        # Update environment if keys changed
+        if gemini_key_input and gemini_key_input != os.environ.get("GEMINI_API_KEY"):
+            os.environ["GEMINI_API_KEY"] = gemini_key_input
+        if openai_key_input and openai_key_input != os.environ.get("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = openai_key_input
+
     # ---- Session State for PRD ----
     if 'prd_memory' not in st.session_state:
         st.session_state.prd_memory = None
@@ -457,6 +485,7 @@ with tab_prd:
             TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
             GOOGLE_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
             GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX", "")
+            OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
             if not GEMINI_API_KEY:
                 st.error("Missing GEMINI_API_KEY in environment variables.")
@@ -465,7 +494,8 @@ with tab_prd:
 
             orchestrator = PRDOrchestrator(
                 GEMINI_API_KEY, TAVILY_API_KEY, GOOGLE_API_KEY, GOOGLE_CX,
-                GITHUB_PAT, GITHUB_REPO
+                GITHUB_PAT, GITHUB_REPO,
+                OPENAI_API_KEY
             )
 
             success, docx_path, message, memory = orchestrator.generate_prd(
@@ -504,7 +534,8 @@ with tab_prd:
                 GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX", "")
                 orchestrator = PRDOrchestrator(
                     GEMINI_API_KEY, TAVILY_API_KEY, GOOGLE_API_KEY, GOOGLE_CX,
-                    GITHUB_PAT, GITHUB_REPO
+                    GITHUB_PAT, GITHUB_REPO,
+                    os.environ.get("OPENAI_API_KEY", "")
                 )
 
             refine_input = st.session_state.get('refine_input_text', '')
