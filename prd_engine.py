@@ -308,12 +308,26 @@ class BaseAgent:
 
 class GodAgent(BaseAgent):
     """
-    🎯 THE GOD AGENT (Master Orchestrator)
+    🎯 THE GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
 
-    Role: Head of Product + Chief of Staff + Program Manager
-    Think of this as the CEO of the AI product team. It understands
-    what the user wants, decides which agents to activate, manages
-    the workflow, and triggers re-research loops when needed.
+    OBJECTIVE: Convert user input into a structured multi-agent execution plan
+    for PRD generation or refinement.
+
+    THINKING FRAMEWORK:
+    1. Identify intent: New PRD, PRD update, or Refinement
+    2. Identify gaps: Missing research, Weak sections, Lack of clarity
+    3. Decide execution strategy: Full generation, Partial update, Iterative refinement
+
+    DECISION LOGIC:
+    - New PRD: classifier → research → PRD (section loop + evaluator) → engineering_manager → vp_product
+    - PRD Update: gap_detector → research (incremental) → PRD update → engineering_manager → vp_product
+    - Weak PRD: regenerate weak sections → evaluator → engineering_manager → vp_product
+
+    SYSTEM RULES:
+    - NEVER skip research for new PRD
+    - ALWAYS enforce: 3 options → evaluator → selection
+    - ALWAYS require engineering_manager before vp_product
+    - ALWAYS prefer partial updates over full regeneration
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -326,13 +340,41 @@ class GodAgent(BaseAgent):
 
     def plan_initial_workflow(self, user_input: str) -> dict:
         """Decide the workflow for initial PRD generation."""
-        prompt = f"""You are the God Agent — the master orchestrator of a multi-agent PRD system.
-A user has submitted the following input for PRD generation:
+        prompt = f"""You are the GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
 
+## 🎯 OBJECTIVE
+Convert user input into a structured multi-agent execution plan for PRD generation or refinement.
+
+## 🧠 THINKING FRAMEWORK
+1. Identify intent: New PRD, PRD update, or Refinement
+2. Identify gaps: Missing research, Weak sections, Lack of clarity
+3. Decide execution strategy: Full generation, Partial update, Iterative refinement
+
+## ⚙️ DECISION LOGIC
+New PRD: → classifier → research → PRD (section loop + evaluator) → engineering_manager → vp_product
+PRD Update: → gap_detector → research (incremental) → PRD update → engineering_manager → vp_product
+Weak PRD: → regenerate weak sections → evaluator → engineering_manager → vp_product
+
+## 🧩 SYSTEM RULES
+- NEVER skip research for new PRD
+- ALWAYS enforce: 3 options → evaluator → selection
+- ALWAYS require engineering_manager before vp_product
+- ALWAYS prefer partial updates over full regeneration
+
+User input:
 "{user_input}"
 
-Analyze this input and create a workflow plan. Respond in JSON:
+## 📤 OUTPUT (STRICT JSON)
 {{
+    "intent": "new_prd",
+    "confidence": 0.0,
+    "execution_strategy": "full_generation",
+    "identified_gaps": ["list of identified gaps"],
+    "action_plan": [
+        {{"step": 1, "agent": "classifier", "task": "classify user input"}}
+    ],
+    "priority": "speed | quality | balanced",
+    "notes": "short reasoning",
     "input_quality": "high|medium|low",
     "input_summary": "one-line summary of what user wants to build",
     "research_queries": ["list of 4-6 specific research queries to investigate"],
@@ -375,7 +417,15 @@ Analyze this input and create a workflow plan. Respond in JSON:
         for name, section in memory.prd_state.items():
             current_prd_summary += f"- {name}: {(section.selected_option or '')[:100]}...\n"
 
-        prompt = f"""You are the God Agent orchestrating a PRD refinement.
+        prompt = f"""You are the GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
+
+## 🎯 OBJECTIVE
+Analyze the user's update request and create an execution plan for PRD refinement.
+
+## 🧩 SYSTEM RULES
+- ALWAYS prefer partial updates over full regeneration
+- ALWAYS require engineering_manager before vp_product
+- ALWAYS enforce: 3 options → evaluator → selection
 
 The user previously built a PRD (v{memory.version}) with these sections:
 {current_prd_summary}
@@ -385,13 +435,19 @@ Previous inputs: {json.dumps(memory.user_inputs[-3:])}
 The user now says:
 "{new_input}"
 
-Decide what to do. Respond in JSON:
+Decide what to do. Respond in STRICT JSON:
 {{
+    "intent": "update_prd | refine_prd",
+    "confidence": 0.0,
+    "execution_strategy": "partial_update | refinement",
+    "identified_gaps": ["list of identified gaps"],
     "action": "update_sections|regenerate_all|add_requirement",
     "affected_sections": ["list of section names to regenerate"],
     "new_research_needed": true|false,
     "research_queries": ["specific queries if research needed"],
-    "instructions_for_generator": "specific instructions for the PRD generator"
+    "instructions_for_generator": "specific instructions for the PRD generator",
+    "priority": "speed | quality | balanced",
+    "notes": "short reasoning"
 }}"""
         try:
             result = self._call_llm_json(prompt, f"Update interpretation: {new_input[:100]}")
@@ -422,10 +478,13 @@ class ClassifierAgent(BaseAgent):
     """
     📋 CLASSIFIER AGENT
 
-    Role: Input Analyst
-    Reads the user's input and figures out: is this an idea they want
-    to build? A problem they want to solve? Or both? This classification
-    shapes how the rest of the agents approach the work.
+    A high-precision intent classifier for product workflows.
+
+    RULES:
+    - Pain → problem_statement
+    - Solution → idea
+    - Modification → prd_update
+    - Mixed → choose dominant intent
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -437,21 +496,36 @@ class ClassifierAgent(BaseAgent):
         )
 
     def classify(self, user_input: str) -> PRDContext:
-        """Classify user input as idea, problem statement, or both."""
-        prompt = f"""Analyze this user input for a Product Requirements Document:
+        """Classify user input as idea, problem statement, or prd_update."""
+        prompt = f"""You are a high-precision intent classifier for product workflows.
 
+## 🎯 TASK
+Classify input into:
+- idea
+- problem_statement
+- prd_update
+
+## 🧠 RULES
+- Pain → problem_statement
+- Solution → idea
+- Modification → prd_update
+- Mixed → choose dominant intent
+
+User input:
 "{user_input}"
 
-Classify it and extract components. Respond in JSON:
+## 📤 OUTPUT
 {{
-    "input_type": "idea|problem_statement|both",
+    "type": "idea|problem_statement|prd_update",
+    "confidence": 0.0,
+    "reason": "clear explanation",
     "problem_statement": "the core problem being solved (write one even if input is just an idea)",
     "idea": "the product/feature concept (write one even if input is just a problem)"
 }}"""
         try:
             result = self._call_llm_json(prompt, f"Classifying: {user_input[:100]}")
             return PRDContext(
-                input_type=result.get("input_type", "both"),
+                input_type=result.get("type", result.get("input_type", "both")),
                 problem_statement=result.get("problem_statement", user_input),
                 idea=result.get("idea", user_input),
                 original_input=user_input
@@ -471,13 +545,20 @@ Classify it and extract components. Respond in JSON:
 
 class ResearchAgent(BaseAgent):
     """
-    🔬 RESEARCH AGENT
+    🔬 RESEARCH AGENT — Elite product research analyst.
 
-    Role: Senior Market Researcher
-    Searches the internet using BOTH Tavily AND Google Search for every
-    query, combines and deduplicates results. Also pulls Specter
-    intelligence reports from the GitHub repository for additional context.
-    Supports incremental research — reuses past results from memory.
+    THINKING MODEL:
+    - Market reality (size, maturity, behavior)
+    - Competitors (strategy, strengths, gaps)
+    - User psychology (pain, motivation, behavior)
+    - Opportunities (where product can win)
+    - Risks
+
+    RULES:
+    - No generic insights
+    - No obvious statements
+    - Reuse past research if available
+    - Add only new insights for gaps
     """
 
     def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
@@ -642,8 +723,22 @@ class ResearchAgent(BaseAgent):
         if not all_snippets and not specter_str:
             return "Limited research data available. PRD will be generated based on the input description."
 
-        prompt = f"""Synthesize these research findings into a comprehensive research brief (500 words max).
-Focus on: market landscape, competitors, user needs, technical considerations, and opportunities.
+        prompt = f"""You are an elite product research analyst.
+
+## 🎯 TASK
+Generate high-signal, actionable research.
+
+## 🧠 THINKING MODEL
+- Market reality (size, maturity, behavior)
+- Competitors (strategy, strengths, gaps)
+- User psychology (pain, motivation, behavior)
+- Opportunities (where product can win)
+- Risks
+
+## ⚠️ RULES
+- No generic insights
+- No obvious statements
+- Add only new insights for gaps
 
 SEARCH RESULTS:
 {chr(10).join(all_snippets[:20])}
@@ -651,7 +746,12 @@ SEARCH RESULTS:
 SPECTER INTELLIGENCE REPORTS:
 {specter_str or "None available"}
 
-Write a clear, structured research brief with bullet points."""
+Synthesize into a structured research brief. Output should cover:
+- market (size, maturity, behavior)
+- competitors (name, strategy, strength, weakness, opportunity for each)
+- user_insights (specific, non-obvious)
+- opportunity_areas (where product can win)
+- risks (concrete, not generic)"""
 
         try:
             return self._call_llm(prompt, "Research synthesis")
@@ -665,12 +765,20 @@ Write a clear, structured research brief with bullet points."""
 
 class PRDGeneratorAgent(BaseAgent):
     """
-    ✍️ PRD GENERATOR AGENT
+    ✍️ PRD GENERATOR AGENT — Top-tier Product Manager.
 
-    Role: Senior Product Manager & Technical Writer
-    The workhorse. For every section of the PRD, it creates 3 complete
-    detailed drafts — each taking a different angle. Every section starts
-    with a plain-English explanation so non-PM readers can understand.
+    TASK: Generate EXACTLY 3 distinct options for a PRD section.
+
+    THINKING MODEL:
+    Option 1: Bold (high ambition, differentiated)
+    Option 2: Balanced (practical, scalable)
+    Option 3: MVP (lean, fast execution)
+
+    RULES:
+    - No repetition across options
+    - No vague phrases
+    - Must be structured and actionable
+    - Include metrics or logic where possible
     """
 
     SECTIONS = [
@@ -709,17 +817,25 @@ class PRDGeneratorAgent(BaseAgent):
 {engineering_feedback}
 """
 
-        prompt = f"""You are a world-class Senior Product Manager writing an enterprise-grade PRD.
+        prompt = f"""You are a top-tier Product Manager.
 
-CRITICAL FORMATTING RULES:
-1. Start with a 2-3 sentence plain-English explanation of WHAT this section is and WHY it matters.
-   Write as if the reader has NEVER seen a PRD before and knows nothing about product management.
-2. Then provide extremely detailed, specific content.
-3. Use bullet points, numbered lists, tables, and clear headers.
-4. Include exact numbers, specific features, concrete user flows, and measurable outcomes.
-5. The section must be SO detailed that a first-time reader can understand exactly what is being
-   built, why it matters, and how it will be implemented.
-6. Minimum 400 words per option. Be thorough, not brief.
+## 🎯 TASK
+Generate EXACTLY 3 distinct options for a PRD section.
+
+## 🧠 THINKING MODEL
+Option 1: Bold (high ambition, differentiated)
+Option 2: Balanced (practical, scalable)
+Option 3: MVP (lean, fast execution)
+
+## ⚠️ RULES
+- No repetition across options
+- No vague phrases
+- Must be structured and actionable
+- Include metrics or logic where possible
+- Start with a 2-3 sentence plain-English explanation of WHAT this section is and WHY it matters
+- Use bullet points, numbered lists, tables, and clear headers
+- Include exact numbers, specific features, concrete user flows, and measurable outcomes
+- Minimum 400 words per option. Be thorough, not brief.
 
 CONTEXT:
 - User's Idea: {context.idea}
@@ -738,7 +854,9 @@ SECTION: {section}
 
 Generate exactly 3 complete, distinct options for this section.
 Label them clearly as "--- OPTION 1 ---", "--- OPTION 2 ---", "--- OPTION 3 ---".
-Each option should take a slightly different strategic angle while maintaining quality.
+
+## 📤 OUTPUT FORMAT
+Each option must be labeled and distinct. No repetition across options.
 """
         try:
             raw = self._call_llm(prompt, f"Generating section: {section}")
@@ -866,12 +984,25 @@ an issue — please retry or refine your input for better results.
 
 class EvaluatorAgent(BaseAgent):
     """
-    ⚖️ EVALUATOR AGENT
+    ⚖️ EVALUATOR AGENT — A ruthless VP of Product.
 
-    Role: Quality Selector
-    Reviews all 3 drafts for each section and picks the strongest one.
-    Considers: clarity, completeness, specificity, business alignment,
-    and readability for non-technical audiences.
+    SCORING DIMENSIONS (score each 1-5):
+    - Clarity (15%)
+    - Depth (20%)
+    - Actionability (25%)
+    - User Focus (15%)
+    - Research Alignment (15%)
+    - Strategic Thinking (10%)
+
+    RULES:
+    - Penalize fluff heavily
+    - Prefer execution-ready outputs
+    - Reward specificity
+    - If all weak → pick best but highlight weakness
+
+    CALCULATION:
+    Final Score = (Clarity × 0.15) + (Depth × 0.20) + (Actionability × 0.25) +
+                  (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -883,10 +1014,13 @@ class EvaluatorAgent(BaseAgent):
         )
 
     def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
-        """Select the best option and provide rationale."""
+        """Select the best option using VP-level scoring."""
         options_text = "\n\n".join([f"=== OPTION {i+1} ===\n{opt}" for i, opt in enumerate(options)])
 
-        prompt = f"""You are evaluating 3 options for the "{section}" section of a PRD.
+        prompt = f"""You are a ruthless VP of Product.
+
+## 🎯 TASK
+Evaluate and select the best option for the "{section}" section of a PRD.
 
 Product Context:
 - Idea: {context.idea}
@@ -895,25 +1029,49 @@ Product Context:
 OPTIONS:
 {options_text}
 
-Evaluate each option on:
-1. Clarity (can a non-PM person understand it?)
-2. Completeness (does it cover everything needed?)
-3. Specificity (concrete details, not vague statements?)
-4. Business alignment (does it serve the product goals?)
-5. Detail level (is it thorough enough for implementation?)
+## 🧠 SCORING DIMENSIONS
+Score each (1–5):
+- Clarity (15%)
+- Depth (20%)
+- Actionability (25%)
+- User Focus (15%)
+- Research Alignment (15%)
+- Strategic Thinking (10%)
 
-Respond in JSON:
+## 🧠 RULES
+- Penalize fluff heavily
+- Prefer execution-ready outputs
+- Reward specificity
+- If all weak → pick best but highlight weakness
+
+## 📊 CALCULATION
+Final Score = (Clarity × 0.15) + (Depth × 0.20) + (Actionability × 0.25) + (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
+
+## 📤 OUTPUT
 {{
-    "selected_index": 0|1|2,
-    "rationale": "2-3 sentences explaining why this option is best",
-    "score": 1-10
+    "scores": [
+        {{
+            "option": 1,
+            "clarity": 0,
+            "depth": 0,
+            "actionability": 0,
+            "user_focus": 0,
+            "research_alignment": 0,
+            "strategic_thinking": 0,
+            "final_score": 0.0
+        }}
+    ],
+    "selected_index": 0,
+    "confidence": 0.0,
+    "reason": "sharp reasoning"
 }}"""
         try:
             result = self._call_llm_json(prompt, f"Evaluating section: {section}")
             idx = result.get("selected_index", 0)
+            rationale = result.get("reason", result.get("rationale", "Selected for best overall quality."))
             if isinstance(idx, int) and 0 <= idx < len(options):
-                return options[idx], result.get("rationale", "Selected for best overall quality.")
-            return options[0], result.get("rationale", "Selected as top option.")
+                return options[idx], rationale
+            return options[0], rationale
         except Exception:
             return options[0], "Selected based on overall quality and completeness."
 
@@ -924,12 +1082,14 @@ Respond in JSON:
 
 class GapDetectorAgent(BaseAgent):
     """
-    🔍 GAP DETECTOR AGENT
+    🔍 GAP DETECTOR AGENT — Precision PRD gap detector.
 
-    Role: Quality Inspector
-    Scans the assembled PRD for missing pieces, weak areas, and
-    incomplete logic. Like a QA inspector on a factory line.
-    Used during iterative refinement to identify what needs improvement.
+    CHECK:
+    - Missing sections
+    - Weak logic
+    - Undefined flows
+    - Missing edge cases
+    - Missing metrics
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -943,7 +1103,17 @@ class GapDetectorAgent(BaseAgent):
     def detect_gaps(self, prd_content: str, new_user_input: str = "",
                     context: PRDContext = None) -> GapReport:
         """Analyze PRD and new input to find gaps."""
-        prompt = f"""You are a Gap Detector Agent analyzing a Product Requirements Document.
+        prompt = f"""You are a precision PRD gap detector.
+
+## 🎯 TASK
+Identify missing or weak areas.
+
+## 🧠 CHECK
+- Missing sections
+- Weak logic
+- Undefined flows
+- Missing edge cases
+- Missing metrics
 
 CURRENT PRD:
 {prd_content[:5000]}
@@ -951,20 +1121,16 @@ CURRENT PRD:
 {"NEW USER INPUT: " + new_user_input if new_user_input else ""}
 {"PRODUCT CONTEXT: " + context.idea if context else ""}
 
-Analyze the PRD thoroughly and identify:
-1. Missing sections or topics not covered
-2. Areas that need more detail or specificity
-3. Weak areas with vague or incomplete logic
-4. Things the new user input requires that aren't in the PRD
-
-Respond in JSON:
+## 📤 OUTPUT
 {{
     "missing_sections": ["list of topics/sections completely absent"],
+    "weak_sections": ["list of sections with weak content"],
+    "logical_gaps": ["list of logical inconsistencies or undefined flows"],
+    "required_research_areas": ["areas needing additional research"],
+    "severity": "low | medium | high",
     "improvements_needed": [
         {{"section": "section name", "issue": "what's wrong", "suggestion": "how to fix"}}
-    ],
-    "weak_areas": ["list of areas that are too vague or incomplete"],
-    "overall_completeness_score": 1-10
+    ]
 }}"""
         try:
             result = self._call_llm_json(prompt, "Gap detection")
@@ -984,13 +1150,18 @@ Respond in JSON:
 
 class EngineeringManagerAgent(BaseAgent):
     """
-    🏗️ ENGINEERING MANAGER AGENT
+    🏗️ ENGINEERING MANAGER AGENT — Senior Engineering Manager.
 
-    Role: Technical Expert & Reviewer
-    Reviews the PRD from a pure engineering perspective. Checks for
-    scalability issues, missing API specs, database concerns, edge cases,
-    UI/UX inconsistencies, and technical feasibility. If problems are
-    found, sends feedback back to the PRD Generator for rewriting.
+    TASK: Validate PRD for technical completeness and scalability.
+
+    CHECK:
+    - System design completeness
+    - APIs and data flow
+    - Edge cases and failures
+    - Scalability risks
+    - UI/UX feasibility
+
+    RULE: If ANY critical gap exists → reject
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -1003,10 +1174,20 @@ class EngineeringManagerAgent(BaseAgent):
 
     def review(self, prd_content: str, context: PRDContext) -> EngineeringReview:
         """Review entire PRD from engineering perspective."""
-        prompt = f"""You are a Senior Engineering Manager with 20+ years experience in
-scalable systems, backend architecture, frontend development, and DevOps.
+        prompt = f"""You are a senior Engineering Manager.
 
-Review this PRD from a pure ENGINEERING perspective:
+## 🎯 TASK
+Validate PRD for technical completeness and scalability.
+
+## 🧠 CHECK
+- System design completeness
+- APIs and data flow
+- Edge cases and failures
+- Scalability risks
+- UI/UX feasibility
+
+## ⚠️ RULE
+If ANY critical gap exists → reject (set status to "needs_changes")
 
 PRODUCT: {context.idea}
 PROBLEM: {context.problem_statement}
@@ -1014,26 +1195,20 @@ PROBLEM: {context.problem_statement}
 PRD CONTENT:
 {prd_content[:6000]}
 
-Identify:
-1. Missing technical details (APIs, database, infrastructure)
-2. Scalability concerns (what breaks at 10x, 100x scale?)
-3. Security gaps (authentication, data protection, compliance)
-4. Edge cases from engineering POV (what happens when X fails?)
-5. UI/UX inconsistencies or missing interaction states
-6. Dependencies and integration risks
-7. Performance bottlenecks
-
-Respond in JSON:
+## 📤 OUTPUT
 {{
+    "status": "approved | needs_changes",
     "approved": true|false,
-    "overall_score": 1-10,
+    "blocking_issues": ["list of critical blocking issues"],
+    "scalability_risks": ["list of scalability concerns"],
+    "missing_technical_details": ["list of missing technical specs"],
+    "ui_ux_gaps": ["list of UI/UX gaps"],
     "issues": [
         {{"section": "name", "severity": "critical|major|minor", "issue": "description", "recommendation": "how to fix"}}
     ],
     "feedback_for_sections": {{
         "Section Name": "specific feedback to improve this section"
-    }},
-    "missing_technical_areas": ["list of technical topics not covered"]
+    }}
 }}"""
         try:
             result = self._call_llm_json(prompt, "Engineering review")
@@ -1056,13 +1231,16 @@ Respond in JSON:
 
 class VPProductAgent(BaseAgent):
     """
-    👔 VP PRODUCT AGENT
+    👔 VP PRODUCT AGENT — VP of Product responsible for final approval.
 
-    Role: Vice President of Product Management
-    The final executive gate. Reviews the complete PRD for business
-    strategy, go-to-market risks, competitive gaps, and anything the
-    team might have missed. Nothing ships without VP approval.
-    20+ years experience at Fortune 500 companies.
+    TASK: Evaluate PRD from a business and strategic perspective.
+
+    CHECK:
+    - Market viability
+    - Competitive advantage
+    - Monetization logic
+    - Product completeness
+    - Edge cases
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -1080,8 +1258,17 @@ class VPProductAgent(BaseAgent):
         if eng_review and eng_review.raw_review:
             eng_summary = f"\nEngineering Review Summary: {eng_review.raw_review[:1000]}"
 
-        prompt = f"""You are the VP of Product Management. 20+ years at Fortune 500 companies.
-$2B+ product portfolio oversight. You are the FINAL gate before this PRD ships.
+        prompt = f"""You are a VP of Product responsible for final approval.
+
+## 🎯 TASK
+Evaluate PRD from a business and strategic perspective.
+
+## 🧠 CHECK
+- Market viability
+- Competitive advantage
+- Monetization logic
+- Product completeness
+- Edge cases
 
 PRODUCT: {context.idea}
 PROBLEM: {context.problem_statement}
@@ -1090,15 +1277,7 @@ PROBLEM: {context.problem_statement}
 PRD CONTENT:
 {prd_content[:6000]}
 
-Conduct a final executive review. Identify:
-1. Strategic gaps (is the product vision clear and compelling?)
-2. Market fit concerns (will users actually want this?)
-3. Business model risks (is the monetization viable?)
-4. Go-to-market gaps (is launch strategy clear?)
-5. Competitive threats (are we differentiated enough?)
-6. Anything the team might have missed
-
-Format your response as:
+Provide your review in the following format:
 
 ## Executive Review Summary
 [2-3 sentence overall assessment]
@@ -1111,6 +1290,16 @@ A: [Detailed analysis and recommendation]
 A: [Detailed analysis]
 
 [Continue with all identified gaps]
+
+## 📤 Final Output
+Also provide a structured JSON block:
+{{
+    "edge_cases": ["list of edge cases identified"],
+    "business_risks": ["list of business risks"],
+    "product_gaps": ["list of product gaps"],
+    "strategic_improvements": ["list of strategic improvements"],
+    "final_verdict": "approve | refine"
+}}
 
 ## Final Verdict
 [Approved/Conditional/Needs Revision] with reasoning"""
