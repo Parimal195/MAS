@@ -1313,7 +1313,7 @@ class VPProductAgent(BaseAgent):
     - Edge cases
     """
 
-def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
