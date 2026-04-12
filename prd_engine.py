@@ -918,28 +918,13 @@ Each option must be labeled and distinct. No repetition across options.
         except Exception as e:
             error_msg = str(e)
             print(f"  ❌ PRD Generator FAILED for '{section}': {error_msg[:200]}")
-            # Check for quota/rate limit errors
-            if "429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in error_msg:
-                fallback = f"""⚠️ API QUOTA EXCEEDED for section: {section}
-
-**What happened:** Your Google Gemini API free tier quota has been exhausted for today.
-
-**Solution:** 
-1. Wait 1-2 minutes and retry (quota refreshes automatically)
-2. OR upgrade to a paid plan at https://aistudio.google.com/app/apikeys
-
-**Context:** {context.idea[:100]}..."""
-            elif "not found" in error_msg and "model" in error_msg:
-                fallback = f"""⚠️ MODEL ERROR for section: {section}
-
-**What happened:** The model '{error_msg}' is unavailable or deprecated.
-
-**Solution:** Try again in a few minutes, or check your API key settings.
-
-**Context:** {context.idea[:100]}..."""
-            else:
-                fallback = self._get_fallback(section, context)
-            return [fallback, fallback, fallback]
+            # Check for quota/rate limit errors - trigger global switch
+            if ("429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in error_msg) and not self.using_openai:
+                BaseAgent._switch_to_openai_global()
+                # Retry with OpenAI - recursive call
+                return self.generate_section(section, context, research_summary, god_plan, engineering_feedback)
+            # Re-raise other errors
+            raise
 
     def _parse_three_options(self, raw: str) -> List[str]:
         """Parse LLM output into 3 separate options."""
