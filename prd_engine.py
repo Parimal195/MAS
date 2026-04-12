@@ -253,25 +253,32 @@ class BaseAgent:
         if self.model is None:
             # Last resort fallback
             try:
-                self.model = genai.GenerativeModel("gemini-1.5-flash")
-                print(f"  ⚠️ {agent_name} → gemini-1.5-flash (fallback)")
+                self.model = genai.GenerativeModel("gemini-2.0-flash-lite")
+                print(f"  ⚠️ {agent_name} → gemini-2.0-flash-lite (fallback)")
             except Exception:
                 raise Exception(f"{agent_name}: No compatible Gemini models available.")
 
-    def _call_llm(self, prompt: str, context: str = "", max_retries: int = 3) -> str:
-        """Call the LLM with retry logic and error logging."""
+    def _call_llm(self, prompt: str, context: str = "", max_retries: int = 4) -> str:
+        """Call the LLM with retry logic, rate-limit awareness, and error logging."""
         for attempt in range(max_retries):
             try:
                 response = self.model.generate_content(prompt)
                 return response.text.strip()
             except Exception as e:
+                error_str = str(e)
+                is_rate_limit = "429" in error_str or "ResourceExhausted" in error_str
                 if attempt < max_retries - 1:
-                    wait = 5 * (attempt + 1)
-                    print(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s: {e}")
+                    # Use longer waits for rate limiting (Google suggests ~37s)
+                    if is_rate_limit:
+                        wait = 40 * (attempt + 1)
+                    else:
+                        wait = 8 * (attempt + 1)
+                    print(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s: {error_str[:120]}")
                     time.sleep(wait)
                 else:
-                    error_msg = str(e)
+                    error_msg = error_str
                     tb = traceback.format_exc()
+                    print(f"  ❌ {self.agent_name} FAILED after {max_retries} retries: {error_str[:200]}")
                     if self.error_logger:
                         self.error_logger.log_error(
                             self.agent_name.lower().replace(" ", "_"),
@@ -333,7 +340,7 @@ class GodAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "God Agent",
             error_logger
         )
@@ -490,7 +497,7 @@ class ClassifierAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Classifier Agent",
             error_logger
         )
@@ -567,7 +574,7 @@ class ResearchAgent(BaseAgent):
                  error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-1.5-flash", "gemini-2.0-flash"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Research Agent",
             error_logger
         )
@@ -799,7 +806,7 @@ class PRDGeneratorAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-1.5-pro", "gemini-1.5-flash"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "PRD Generator",
             error_logger
         )
@@ -863,6 +870,7 @@ Each option must be labeled and distinct. No repetition across options.
             options = self._parse_three_options(raw)
             return options
         except Exception as e:
+            print(f"  ❌ PRD Generator FAILED for '{section}': {str(e)[:200]}")
             fallback = self._get_fallback(section, context)
             return [fallback, fallback, fallback]
 
@@ -1008,7 +1016,7 @@ class EvaluatorAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Evaluator Agent",
             error_logger
         )
@@ -1095,7 +1103,7 @@ class GapDetectorAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-2.0-flash", "gemini-1.5-flash"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Gap Detector",
             error_logger
         )
@@ -1167,7 +1175,7 @@ class EngineeringManagerAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-1.5-flash", "gemini-1.5-pro"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Engineering Manager",
             error_logger
         )
@@ -1246,7 +1254,7 @@ class VPProductAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
-            ["gemini-1.5-flash", "gemini-1.5-pro"],
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "VP Product",
             error_logger
         )
@@ -1430,7 +1438,7 @@ class PRDOrchestrator:
                     rationale=rationale
                 )
 
-                time.sleep(1)  # Rate limit protection
+                time.sleep(3)  # Rate limit protection
 
             memory.prd_state = prd_sections
 
