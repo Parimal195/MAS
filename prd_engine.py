@@ -242,6 +242,9 @@ Context       : {context or 'N/A'}
 
 class BaseAgent:
     """Shared agent infrastructure — model initialization with fallback."""
+    
+    _use_openai_global = False  # Class variable: if True, ALL agents use OpenAI
+    _orchestrator = None  # Reference to orchestrator for global switch
 
     def __init__(self, gemini_api_key: str, preferred_models: List[str],
                  agent_name: str, error_logger: GitHubErrorLogger = None,
@@ -251,9 +254,9 @@ class BaseAgent:
         self.error_logger = error_logger
         self.model = None
         self.openai_model = None
-        self.using_openai_fallback = False
+        self.using_openai = False  # True if using OpenAI
 
-        # Initialize Gemini models
+        # Try Gemini first (default)
         for model_name in preferred_models:
             try:
                 self.model = genai.GenerativeModel(model_name)
@@ -263,61 +266,56 @@ class BaseAgent:
                 continue
 
         if self.model is None:
-            # Last resort fallback
-            try:
-                self.model = genai.GenerativeModel("gemini-2.0-flash-lite")
-                print(f"  ⚠️ {agent_name} → gemini-2.0-flash-lite (fallback)")
-            except Exception:
-                # Try ChatGPT fallback if Gemini fails
-                if openai_api_key and OPENAI_AVAILABLE:
-                    try:
-                        self.openai_model = openai.OpenAI(api_key=openai_api_key)
-                        self.using_openai_fallback = True
-                        print(f"  ⚠️ {agent_name} → Using ChatGPT fallback (gpt-4o-mini)")
-                    except Exception as e:
-                        print(f"  ❌ ChatGPT fallback failed: {e}")
-                        raise Exception(f"{agent_name}: No compatible Gemini models available.")
-                else:
-                    raise Exception(f"{agent_name}: No compatible Gemini models available.")
+            raise Exception(f"{agent_name}: No compatible models available.")
+
+    @classmethod
+    def _switch_to_openai_global(cls):
+        """Switch ALL agents to use OpenAI. Call this on first quota error."""
+        cls._use_openai_global = True
+        print(f"  🚨 GEMINI QUOTA EXHAUSTED! Switching ALL agents to OpenAI")
 
     def _call_llm(self, prompt: str, context: str = "", max_retries: int = 4) -> str:
         """Call the LLM with retry logic, rate-limit awareness, and error logging."""
+        # Check if global switch happened (another agent hit quota error)
+        if self._use_openai_global and not self.using_openai:
+            openai_key = os.environ.get("OPENAI_API_KEY", "")
+            if openai_key and OPENAI_AVAILABLE:
+                self.openai_model = openai.OpenAI(api_key=openai_key)
+                self.using_openai = True
+                print(f"  ⚡ {self.agent_name} → Using OpenAI (global switch)")
+        
         for attempt in range(max_retries):
             try:
-                # Use ChatGPT if in fallback mode
-                if self.using_openai_fallback and self.openai_model:
+                # Use OpenAI if already switched
+                if self.using_openai and self.openai_model:
                     response = self.openai_model.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=[{"role": "user", "content": prompt}]
                     )
                     return response.choices[0].message.content.strip()
                 
-                # Default Gemini
+                # Try Gemini first
                 response = self.model.generate_content(prompt)
                 return response.text.strip()
             except Exception as e:
                 error_str = str(e)
                 is_rate_limit = "429" in error_str or "ResourceExhausted" in error_str
                 
-                # Try ChatGPT fallback on quota error
-                if is_rate_limit and not self.using_openai_fallback:
+                # FIRST attempt quota error: Switch entire system to OpenAI immediately
+                if is_rate_limit and attempt == 0 and not self.using_openai:
                     openai_key = os.environ.get("OPENAI_API_KEY", "")
                     if openai_key and OPENAI_AVAILABLE:
-                        try:
-                            self.openai_model = openai.OpenAI(api_key=openai_key)
-                            self.using_openai_fallback = True
-                            print(f"  ⚠️ {self.agent_name} → Quota exceeded, switching to ChatGPT fallback")
-                            continue  # Retry with ChatGPT
-                        except Exception as oe:
-                            print(f"  ⚠️ ChatGPT fallback init failed: {oe}")
+                        # Set a global flag for all other agents
+                        self._switch_to_openai_global()
+                        # Switch this agent too
+                        self.openai_model = openai.OpenAI(api_key=openai_key)
+                        self.using_openai = True
+                        print(f"  ⚠️ {self.agent_name} → Gemini quota exhausted! Switching ALL agents to OpenAI")
+                        continue  # Retry with OpenAI
                     
                 if attempt < max_retries - 1:
-                    # Use longer waits for rate limiting (Google suggests ~37s)
-                    if is_rate_limit:
-                        wait = 40 * (attempt + 1)
-                    else:
-                        wait = 8 * (attempt + 1)
-                    print(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s: {error_str[:120]}")
+                    wait = 8 * (attempt + 1)
+                    print(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s")
                     time.sleep(wait)
                 else:
                     error_msg = error_str
@@ -1890,7 +1888,7 @@ p {{ line-height: 1.6; }}
             if hasattr(agent, 'openai_model') and agent.openai_model is None:
                 try:
                     agent.openai_model = openai.OpenAI(api_key=openai_key)
-                    agent.using_openai_fallback = True
+                    agent.using_openai = True
                     print(f"  ⚡ {agent.agent_name} → switched to ChatGPT")
                 except Exception as e:
                     print(f"  ❌ Failed to switch {agent.agent_name}: {e}")
