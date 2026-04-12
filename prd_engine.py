@@ -617,12 +617,13 @@ class ResearchAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
                  google_api_key: str = "", google_cx: str = "",
                  github_pat: str = "", github_repo: str = "",
-                 error_logger: GitHubErrorLogger = None):
+                 error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Research Agent",
-            error_logger
+            error_logger,
+            openai_api_key
         )
         self.tavily_client = None
         if tavily_api_key and TAVILY_AVAILABLE:
@@ -1081,7 +1082,16 @@ class EvaluatorAgent(BaseAgent):
                   (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
     """
 
-def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+        super().__init__(
+            gemini_api_key,
+            ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
+            "Evaluator Agent",
+            error_logger,
+            openai_api_key
+        )
+
+    def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
         """Select the best option using VP-level scoring."""
         options_text = "\n\n".join([f"=== OPTION {i+1} ===\n{opt}" for i, opt in enumerate(options)])
 
