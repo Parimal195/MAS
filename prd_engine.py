@@ -41,12 +41,18 @@ from copy import deepcopy
 import google.generativeai as genai
 
 # ChatGPT OpenAI imports (fallback when Gemini quota exhausted)
+OPENAI_AVAILABLE = False
+OPENAI_KEY_AVAILABLE = False
+
 try:
     import openai
     OPENAI_AVAILABLE = True
+    OPENAI_KEY_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY", ""))
+    if not OPENAI_KEY_AVAILABLE:
+        print("⚠️ OPENAI_API_KEY not set — ChatGPT fallback won't work")
 except ImportError:
-    OPENAI_AVAILABLE = False
-    print("⚠️ openai not installed — ChatGPT fallback disabled")
+    print("⚠️ openai package not installed — ChatGPT fallback disabled")
+    print("⚠️ Add 'openai>=1.0.0' to requirements.txt")
 
 # Optional imports with graceful fallback
 try:
