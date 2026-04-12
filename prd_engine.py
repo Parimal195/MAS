@@ -1461,6 +1461,12 @@ class PRDOrchestrator:
                 memory = PRDMemory()
             memory.user_inputs.append(user_input)
 
+            # ---- QUOTA CHECK: Test Gemini and switch to OpenAI if needed ----
+            self._progress(progress_callback, "🔍 Checking API quota status...")
+            if not self._check_gemini_quota():
+                self._progress(progress_callback, "⚠️ Gemini quota exhausted — switching to ChatGPT for all agents")
+                self._switch_all_agents_to_openai()
+
             # ---- STEP 1: God Agent plans workflow ----
             self._progress(progress_callback, "🎯 God Agent: Planning workflow...")
             god_plan = self.god_agent.plan_initial_workflow(user_input)
@@ -1601,6 +1607,11 @@ class PRDOrchestrator:
         try:
             memory.user_inputs.append(new_input)
             context = memory.context
+
+            # ---- QUOTA CHECK ----
+            if not self._check_gemini_quota():
+                self._progress(progress_callback, "⚠️ Gemini quota exhausted — switching to ChatGPT")
+                self._switch_all_agents_to_openai()
 
             # ---- STEP 1: God Agent interprets the update ----
             self._progress(progress_callback, "🎯 God Agent: Interpreting your update...")
@@ -1843,6 +1854,46 @@ p {{ line-height: 1.6; }}
     # -----------------------------------------------------------------
     # UTILITIES
     # -----------------------------------------------------------------
+
+    def _check_gemini_quota(self) -> bool:
+        """Quick check if Gemini API quota is available. Returns True if available, False if exhausted."""
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if not openai_key or not OPENAI_AVAILABLE:
+            return True  # Can't switch to OpenAI, return True to try Gemini
+        
+        try:
+            test_model = genai.GenerativeModel("gemini-2.0-flash-lite")
+            test_response = test_model.generate_content(
+                "Hi",
+                generation_config=genai.GenerationConfig(max_output_tokens=5)
+            )
+            return True  # Gemini works
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str:
+                return False  # Quota exhausted
+            return True  # Other error, try anyway
+
+    def _switch_all_agents_to_openai(self):
+        """Switch all agents to use OpenAI ChatGPT instead of Gemini."""
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if not openai_key or not OPENAI_AVAILABLE:
+            return
+        
+        agents = [
+            self.god_agent, self.classifier, self.researcher,
+            self.generator, self.evaluator, self.gap_detector,
+            self.eng_manager, self.vp_product
+        ]
+        
+        for agent in agents:
+            if hasattr(agent, 'openai_model') and agent.openai_model is None:
+                try:
+                    agent.openai_model = openai.OpenAI(api_key=openai_key)
+                    agent.using_openai_fallback = True
+                    print(f"  ⚡ {agent.agent_name} → switched to ChatGPT")
+                except Exception as e:
+                    print(f"  ❌ Failed to switch {agent.agent_name}: {e}")
 
     def _progress(self, callback, message: str):
         """Send progress update."""
