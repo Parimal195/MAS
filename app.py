@@ -22,6 +22,18 @@ import json
 import pytz
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Force reload .env on every Streamlit run
+from pathlib import Path
+if Path(".env").exists():
+    from dotenv import dotenv_values
+    env_vars = dotenv_values(".env")
+    for key, value in env_vars.items():
+        if value:
+            os.environ[key] = value
+elif Path(".env.example").exists():
+    st.warning("⚠️ Please copy .env.example to .env and add your API keys!")
+
 from github import Github
 from streamintel_agent import StreamIntelAgent
 try:
@@ -32,9 +44,7 @@ except ImportError:
     print("Warning: pdf_utils not available - PDF generation disabled")
 from email_utils import send_report_email
 from prd_engine import PRDOrchestrator
-
-# Load variables
-load_dotenv()
+from logger_config import prd_logger
 
 st.set_page_config(page_title="SPECTER | STREAMINTEL", page_icon="👁️", layout="wide")
 
@@ -410,31 +420,45 @@ with tab_prd:
 
     # ---- API Keys Configuration ----
     with st.expander("🔑 API Keys Configuration", expanded=True):
-        st.markdown("Configure your API keys. Keys stored in `.env` will be used automatically.")
+        st.markdown("Configure your API keys. **Required:** GEMINI_API_KEY.")
         
-        col_gemini, col_openai = st.columns(2)
-        with col_gemini:
-            gemini_key_input = st.text_input(
-                "Google Gemini API Key",
-                value=os.environ.get("GEMINI_API_KEY", ""),
-                type="password",
-                key="gemini_key_input"
-            )
-        with col_openai:
-            openai_key_input = st.text_input(
-                "OpenAI API Key (ChatGPT Fallback)",
-                value=os.environ.get("OPENAI_API_KEY", ""),
-                type="password",
-                key="openai_key_input"
-            )
+        env_file = ".env"
+        if not os.path.exists(env_file):
+            st.warning(f"⚠️ No `.env` file found. Please create one from the `.env.example` template.")
         
-        st.caption("💡 If Gemini quota is exhausted, ChatGPT will be used automatically as fallback.")
-
-        # Update environment if keys changed
-        if gemini_key_input and gemini_key_input != os.environ.get("GEMINI_API_KEY"):
+        gemini_key_input = st.text_input(
+            "Google Gemini API Key *",
+            value=os.environ.get("GEMINI_API_KEY", ""),
+            type="password",
+            key="gemini_key_input"
+        )
+        
+        if gemini_key_input:
+            existing_env = {}
+            if os.path.exists(env_file):
+                with open(env_file, "r") as f:
+                    for line in f:
+                        if "=" in line and not line.startswith("#"):
+                            key, val = line.strip().split("=", 1)
+                            existing_env[key] = val
+            
+            existing_env["GEMINI_API_KEY"] = gemini_key_input
+            
+            with open(env_file, "w") as f:
+                for key, val in existing_env.items():
+                    f.write(f"{key}={val}\n")
+            
             os.environ["GEMINI_API_KEY"] = gemini_key_input
-        if openai_key_input and openai_key_input != os.environ.get("OPENAI_API_KEY"):
-            os.environ["OPENAI_API_KEY"] = openai_key_input
+            st.success("✅ API key saved to .env file!")
+        
+        # ---- API Status Display ----
+        with st.expander("🔍 API Status", expanded=False):
+            gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
+            
+            if gemini_configured:
+                st.success("✅ Gemini API Key: Configured")
+            else:
+                st.error("❌ Gemini API Key: Not configured")
 
     # ---- Session State for PRD ----
     if 'prd_memory' not in st.session_state:
@@ -485,7 +509,6 @@ with tab_prd:
             TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
             GOOGLE_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
             GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX", "")
-            OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
             if not GEMINI_API_KEY:
                 st.error("Missing GEMINI_API_KEY in environment variables.")
@@ -494,8 +517,7 @@ with tab_prd:
 
             orchestrator = PRDOrchestrator(
                 GEMINI_API_KEY, TAVILY_API_KEY, GOOGLE_API_KEY, GOOGLE_CX,
-                GITHUB_PAT, GITHUB_REPO,
-                OPENAI_API_KEY
+                GITHUB_PAT, GITHUB_REPO
             )
 
             success, docx_path, message, memory = orchestrator.generate_prd(
@@ -534,8 +556,7 @@ with tab_prd:
                 GOOGLE_CX = os.environ.get("GOOGLE_SEARCH_CX", "")
                 orchestrator = PRDOrchestrator(
                     GEMINI_API_KEY, TAVILY_API_KEY, GOOGLE_API_KEY, GOOGLE_CX,
-                    GITHUB_PAT, GITHUB_REPO,
-                    os.environ.get("OPENAI_API_KEY", "")
+                    GITHUB_PAT, GITHUB_REPO
                 )
 
             refine_input = st.session_state.get('refine_input_text', '')
@@ -714,6 +735,17 @@ with tab_prd:
 
         # ---- AGENT ACTIVITY LOG ----
         with st.expander("🤖 Agent Activity Log"):
+            # Add link to view full log file
+            log_file = "logs/prd_engine.log"
+            if os.path.exists(log_file):
+                with open(log_file, "r") as f:
+                    log_content = f.read()
+                st.text_area("Full Log File", log_content, height=300, key="full_log_viewer")
+            else:
+                st.info("No log file found yet.")
+            
+            st.markdown("---")
+            st.markdown("**Session Activity:**")
             if st.session_state.agent_log:
                 for log_entry in st.session_state.agent_log:
                     st.text(log_entry)

@@ -38,21 +38,30 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from copy import deepcopy
 
-import google.generativeai as genai
+from dotenv import load_dotenv
+load_dotenv()
 
-# ChatGPT OpenAI imports (fallback when Gemini quota exhausted)
-OPENAI_AVAILABLE = False
-OPENAI_KEY_AVAILABLE = False
+import logging
+from logger_config import (
+    prd_logger, log_api_check, log_agent_start, log_agent_end,
+    log_error, log_api_call, log_section_generated
+)
 
+from google import genai
+from google.genai import types
+
+GROQ_AVAILABLE = False
 try:
-    import openai
-    OPENAI_AVAILABLE = True
-    OPENAI_KEY_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY", ""))
-    if not OPENAI_KEY_AVAILABLE:
-        print("⚠️ OPENAI_API_KEY not set — ChatGPT fallback won't work")
+    from groq import Groq
+    GROQ_AVAILABLE = True
 except ImportError:
-    print("⚠️ openai package not installed — ChatGPT fallback disabled")
-    print("⚠️ Add 'openai>=1.0.0' to requirements.txt")
+    print("⚠️ groq package not installed — Run: pip install groq")
+
+def get_groq_client() -> Groq:
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not set")
+    return Groq(api_key=api_key)
 
 # Optional imports with graceful fallback
 try:
@@ -247,92 +256,134 @@ Context       : {context or 'N/A'}
 # =============================================================================
 
 class BaseAgent:
-    """Shared agent infrastructure — model initialization with fallback."""
+    """Shared agent infrastructure — model initialization with global quota handling."""
     
-    _use_openai_global = False  # Class variable: if True, ALL agents use OpenAI
-    _orchestrator = None  # Reference to orchestrator for global switch
-
+    _client = None  # Shared Gemini client
+    _groq_client = None  # Shared Groq client
+    _use_groq_global = False  # Global flag - once set, all agents use Groq
+    _quota_checked = False  # Track if quota check was done
+    
     def __init__(self, gemini_api_key: str, preferred_models: List[str],
-                 agent_name: str, error_logger: GitHubErrorLogger = None,
-                 openai_api_key: str = None):
-        genai.configure(api_key=gemini_api_key)
+                 agent_name: str, error_logger: GitHubErrorLogger = None):
+        
+        # Global quota check - do this only once at start
+        if not BaseAgent._quota_checked:
+            BaseAgent._quota_checked = True
+            BaseAgent._check_quota_and_set_provider(gemini_api_key)
+        
+        if BaseAgent._use_groq_global:
+            # Use Groq directly (quota exhausted)
+            if BaseAgent._groq_client is None and GROQ_AVAILABLE and os.environ.get("GROQ_API_KEY"):
+                try:
+                    BaseAgent._groq_client = get_groq_client()
+                except Exception as e:
+                    log_error(prd_logger, "groq_init", str(e), "Failed to init Groq")
+            
+            self.client = None
+            self.model_name = None
+            self.groq_model = BaseAgent._groq_client
+            self.using_groq = True
+            prd_logger.info(f"  ✅ {agent_name} → Groq (llama-3.3-70b-versatile)")
+        else:
+            # Try Gemini first
+            if BaseAgent._client is None:
+                BaseAgent._client = genai.Client(api_key=gemini_api_key)
+            
+            self.client = BaseAgent._client
+            self.model_name = preferred_models[0] if preferred_models else "gemini-2.0-flash"
+            self.groq_model = None
+            self.using_groq = False
+            prd_logger.info(f"  ✅ {agent_name} → Gemini ({self.model_name})")
+        
         self.agent_name = agent_name
         self.error_logger = error_logger
-        self.model = None
-        self.openai_model = None
-        self.using_openai = False  # True if using OpenAI
-
-        # Try Gemini first (default)
-        for model_name in preferred_models:
-            try:
-                self.model = genai.GenerativeModel(model_name)
-                print(f"  ✅ {agent_name} → {model_name}")
-                break
-            except Exception:
-                continue
-
-        if self.model is None:
-            raise Exception(f"{agent_name}: No compatible models available.")
 
     @classmethod
-    def _switch_to_openai_global(cls):
-        """Switch ALL agents to use OpenAI. Call this on first quota error."""
-        cls._use_openai_global = True
-        print(f"  🚨 GEMINI QUOTA EXHAUSTED! Switching ALL agents to OpenAI")
+    def _check_quota_and_set_provider(cls, gemini_api_key: str):
+        """Check Gemini quota once at start. If exhausted, switch all agents to Groq globally."""
+        if not GROQ_AVAILABLE or not os.environ.get("GROQ_API_KEY"):
+            prd_logger.info("Groq not available, using Gemini")
+            return
+        
+        try:
+            # Try a small test request to Gemini
+            test_client = genai.Client(api_key=gemini_api_key)
+            test_response = test_client.models.generate_content(
+                model="gemini-2.0-flash-lite",
+                contents="Hi",
+            )
+            _ = test_response.candidates[0].content.parts[0].text.strip()
+            prd_logger.info("✅ Gemini quota available")
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str:
+                cls._use_groq_global = True
+                prd_logger.warning("⚠️ Gemini quota exhausted! Switching ALL agents to Groq globally")
+            else:
+                prd_logger.warning(f"⚠️ Gemini check failed: {error_str[:100]}, using Gemini anyway")
 
     def _call_llm(self, prompt: str, context: str = "", max_retries: int = 4) -> str:
-        """Call the LLM with retry logic, rate-limit awareness, and error logging."""
-        # Check if global switch happened (another agent hit quota error)
-        if self._use_openai_global and not self.using_openai:
-            openai_key = os.environ.get("OPENAI_API_KEY", "")
-            if openai_key and OPENAI_AVAILABLE:
-                self.openai_model = openai.OpenAI(api_key=openai_key)
-                self.using_openai = True
-                print(f"  ⚡ {self.agent_name} → Using OpenAI (global switch)")
+        """Call the LLM - uses global provider setting."""
+        log_agent_start(prd_logger, self.agent_name, f"LLM call: {context[:50] if context else 'prompt'}")
         
         for attempt in range(max_retries):
             try:
-                # Use OpenAI if already switched
-                if self.using_openai and self.openai_model:
-                    response = self.openai_model.chat.completions.create(
-                        model="gpt-4o-mini",
+                if self.using_groq and self.groq_model:
+                    log_api_call(prd_logger, "Groq", "chat.completions", "CALL", f"Attempt {attempt+1}")
+                    response = self.groq_model.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
                         messages=[{"role": "user", "content": prompt}]
                     )
-                    return response.choices[0].message.content.strip()
+                    result = response.choices[0].message.content.strip()
+                    log_api_call(prd_logger, "Groq", "chat.completions", "SUCCESS", f"Response: {len(result)} chars")
+                    return result
                 
-                # Try Gemini first
-                response = self.model.generate_content(prompt)
-                return response.text.strip()
+                # Gemini path
+                log_api_call(prd_logger, "Gemini", "generate_content", "CALL", f"Attempt {attempt+1}")
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                )
+                result = response.candidates[0].content.parts[0].text.strip()
+                log_api_call(prd_logger, "Gemini", "generate_content", "SUCCESS", f"Response: {len(result)} chars")
+                return result
             except Exception as e:
                 error_str = str(e)
-                is_rate_limit = "429" in error_str or "ResourceExhausted" in error_str
                 
-                # FIRST attempt quota error: Switch entire system to OpenAI immediately
-                if is_rate_limit and attempt == 0 and not self.using_openai:
-                    openai_key = os.environ.get("OPENAI_API_KEY", "")
-                    if openai_key and OPENAI_AVAILABLE:
-                        # Set a global flag for all other agents
-                        self._switch_to_openai_global()
-                        # Switch this agent too
-                        self.openai_model = openai.OpenAI(api_key=openai_key)
-                        self.using_openai = True
-                        print(f"  ⚠️ {self.agent_name} → Gemini quota exhausted! Switching ALL agents to OpenAI")
-                        continue  # Retry with OpenAI
-                    
+                # If quota exhausted during execution, switch globally to Groq
+                if ("429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str):
+                    if not BaseAgent._use_groq_global and GROQ_AVAILABLE:
+                        BaseAgent._use_groq_global = True
+                        BaseAgent._groq_client = get_groq_client()
+                        self.groq_model = BaseAgent._groq_client
+                        self.using_groq = True
+                        self.client = None
+                        prd_logger.warning(f"  ⚠️ {self.agent_name} → Gemini quota exhausted! Switching ALL agents to Groq globally")
+                        continue
+                
+                log_error(prd_logger, self.agent_name, error_str, f"Attempt {attempt+1}/{max_retries}")
+                
                 if attempt < max_retries - 1:
                     wait = 8 * (attempt + 1)
-                    print(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s")
+                    prd_logger.warning(f"  ⚠️ {self.agent_name} retry {attempt+1}/{max_retries} in {wait}s")
                     time.sleep(wait)
                 else:
                     error_msg = error_str
                     tb = traceback.format_exc()
-                    print(f"  ❌ {self.agent_name} FAILED after {max_retries} retries: {error_str[:200]}")
+                    prd_logger.error(f"  ❌ {self.agent_name} FAILED after {max_retries} retries: {error_str[:200]}")
+                    log_error(prd_logger, f"{self.agent_name}_call", error_msg, f"Context: {context[:100]}")
                     if self.error_logger:
                         self.error_logger.log_error(
                             self.agent_name.lower().replace(" ", "_"),
                             error_msg, tb, context
                         )
                     raise
+
+        log_agent_end(prd_logger, self.agent_name, "COMPLETE")
+        return ""
+
+        log_agent_end(prd_logger, self.agent_name, "COMPLETE")
+        return ""
 
     def _call_llm_json(self, prompt: str, context: str = "") -> dict:
         """Call LLM and parse JSON response."""
@@ -385,33 +436,66 @@ class GodAgent(BaseAgent):
     - ALWAYS prefer partial updates over full regeneration
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "God Agent",
-            error_logger,
-            openai_api_key
+            error_logger
         )
 
     def plan_initial_workflow(self, user_input: str) -> dict:
-        """Decide the workflow for initial PRD generation."""
+        """Decide the workflow for initial PRD generation with smart section selection."""
         prompt = f"""You are the GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
 
 ## 🎯 OBJECTIVE
-Convert user input into a structured multi-agent execution plan for PRD generation or refinement.
+Convert user input into a structured multi-agent execution plan for PRD generation. You must analyze the input to understand WHAT product is being built and WHICH sections are needed.
 
 ## 🧠 THINKING FRAMEWORK
-1. Identify intent: New PRD, PRD update, or Refinement
-2. Identify gaps: Missing research, Weak sections, Lack of clarity
-3. Decide execution strategy: Full generation, Partial update, Iterative refinement
+1. Analyze input: What product is being built? What domain/industry?
+2. Identify product type: streaming, e-commerce, social, productivity, AI/ML, fintech, healthcare, etc.
+3. Determine required sections: Some sections are universal, some are product-specific
+4. Identify intent: New PRD, PRD update, or Refinement
+5. Decide execution strategy
 
-## ⚙️ DECISION LOGIC
-New PRD: → classifier → research → PRD (section loop + evaluator) → engineering_manager → vp_product
-PRD Update: → gap_detector → research (incremental) → PRD update → engineering_manager → vp_product
-Weak PRD: → regenerate weak sections → evaluator → engineering_manager → vp_product
+## 📋 SECTION CATALOG (know when to use each)
 
-## 🧩 SYSTEM RULES
+### Core Sections (ALL products need these):
+- Problem Statement: What problem are we solving? Who has it? How painful?
+- Objectives: Quantifiable goals with targets (SMART)
+- Core Product Principles: Fundamental rules guiding the product
+- Scope: What's IN and what's OUT (prevent scope creep)
+- User Personas: Who are the users? Demographics, goals, pain points
+- User Stories & Flows: How users interact with the product (step-by-step)
+- Functional Requirements: What features to build (Feature ID, Name, Description, Priority)
+- Non-Functional Requirements: Performance, scalability, security, accessibility
+- Technical Architecture: System design, tech stack, database, APIs
+- Business Requirements & Monetization: Revenue model, costs, go-to-market
+- Implementation Roadmap: Phased plan with timelines
+- Risks & Mitigations: What could go wrong and how to prevent
+- Success Metrics & KPIs: How do we measure success?
+- Analytics: What events to track and why
+
+### Product-Specific Sections (use when relevant):
+- Feed/Discovery: For content platforms (social, streaming, news)
+- Moderation & Safety: For UGC platforms (content review, AI moderation)
+- AI Design: For AI/ML features (signals, algorithms, outputs)
+- Payments & Billing: For fintech/e-commerce (transactions, refunds)
+- Notifications: For engagement products (push, email, in-app)
+- Search: For discovery products (ranking, filters)
+- Onboarding: For consumer products (progressive profiling)
+- Partnerships/API: For platform products (integrations)
+- Compliance: For regulated industries (GDPR, HIPAA, SOC2)
+- etc.
+
+## 🔍 DECISION LOGIC
+- Streaming/Video platforms → Add Feed, Moderation, AI Design sections
+- E-commerce → Add Payments, Inventory, Logistics sections
+- Social platforms → Add Feed, Moderation, Notifications sections
+- AI/ML products → Add AI Design, Model Monitoring sections
+- Fintech → Add Payments, Compliance, Security sections
+
+## ⚙️ SYSTEM RULES
 - NEVER skip research for new PRD
 - ALWAYS enforce: 3 options → evaluator → selection
 - ALWAYS require engineering_manager before vp_product
@@ -425,18 +509,36 @@ User input:
     "intent": "new_prd",
     "confidence": 0.0,
     "execution_strategy": "full_generation",
+    "product_type": "streaming/video platform",
+    "input_quality": "high|medium|low",
+    "input_summary": "one-line summary of what user wants to build",
     "identified_gaps": ["list of identified gaps"],
     "action_plan": [
         {{"step": 1, "agent": "classifier", "task": "classify user input"}}
     ],
-    "priority": "speed | quality | balanced",
-    "notes": "short reasoning",
-    "input_quality": "high|medium|low",
-    "input_summary": "one-line summary of what user wants to build",
-    "research_queries": ["list of 4-6 specific research queries to investigate"],
+    "required_sections": [
+        "Problem Statement",
+        "Objectives",
+        "Core Product Principles", 
+        "Scope",
+        "User Roles",
+        "User Flows",
+        "Functional Requirements",
+        "Non-Functional Requirements",
+        "Technical Architecture",
+        "Monetization",
+        "Edge Cases",
+        "Analytics",
+        "Feed",
+        "Moderation & NSFW System",
+        "AI Design for Clips"
+    ],
+    "research_queries": ["list of 4-6 specific research queries"],
     "focus_areas": ["list of key areas the PRD should emphasize"],
-    "special_instructions": "any special considerations for the PRD team"
-}}"""
+    "special_instructions": "any special considerations"
+}}
+
+Respond with JSON only. Think carefully about which sections are needed based on the product type."""
         try:
             result = self._call_llm_json(prompt, f"Initial planning for: {user_input[:100]}")
             if result.get("parse_error"):
@@ -543,13 +645,12 @@ class ClassifierAgent(BaseAgent):
     - Mixed → choose dominant intent
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Classifier Agent",
-            error_logger,
-            openai_api_key
+            error_logger
         )
 
     def classify(self, user_input: str) -> PRDContext:
@@ -621,13 +722,12 @@ class ResearchAgent(BaseAgent):
     def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
                  google_api_key: str = "", google_cx: str = "",
                  github_pat: str = "", github_repo: str = "",
-                 error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+                 error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Research Agent",
-            error_logger,
-            openai_api_key
+            error_logger
         )
         self.tavily_client = None
         if tavily_api_key and TAVILY_AVAILABLE:
@@ -839,34 +939,73 @@ class PRDGeneratorAgent(BaseAgent):
     - Include metrics or logic where possible
     """
 
-    SECTIONS = [
-        "Executive Summary",
-        "Problem Statement",
-        "Solution Overview",
-        "User Personas",
-        "User Stories & Flows",
-        "Functional Requirements",
-        "Non-Functional Requirements",
-        "Technical Architecture",
-        "Business Requirements & Monetization",
-        "Implementation Roadmap",
-        "Risks & Mitigations",
-        "Success Metrics & KPIs",
-    ]
+    SECTIONS = []  # Will be set dynamically based on product type
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "PRD Generator",
-            error_logger,
-            openai_api_key
+            error_logger
         )
+
+    @classmethod
+    def get_sections_for_product(cls, god_plan: dict) -> List[str]:
+        """Dynamically determine sections based on product type from god_plan."""
+        # Default core sections for ALL products
+        core_sections = [
+            "Problem Statement",
+            "Objectives",
+            "Core Product Principles",
+            "Scope",
+            "User Roles",
+            "User Flows",
+            "Functional Requirements",
+            "Non-Functional Requirements",
+            "Technical Architecture",
+            "Business Requirements & Monetization",
+            "Implementation Roadmap",
+            "Risks & Mitigations",
+            "Success Metrics & KPIs",
+            "Analytics",
+            "Edge Cases",
+        ]
+        
+        # Product-specific sections
+        product_specific = {
+            "streaming": ["Feed", "Moderation & NSFW System", "AI Design for Clips"],
+            "video": ["Feed", "Moderation & NSFW System", "Video Processing"],
+            "social": ["Feed", "Moderation & NSFW System", "Notifications", "Engagement"],
+            "ecommerce": ["Payments & Billing", "Inventory Management", "Shipping & Logistics", "Product Catalog"],
+            "fintech": ["Payments & Billing", "Compliance & Regulatory", "Security", "KYC/AML"],
+            "ai_ml": ["AI Design", "Model Monitoring", "Data Pipeline", "Model Training"],
+            "healthcare": ["HIPAA Compliance", "Patient Data", "Medical Records", "Security"],
+            "productivity": ["Collaboration", "Notifications", "Integrations", "Onboarding"],
+        }
+        
+        # Get required_sections from god_plan if available
+        if god_plan and "required_sections" in god_plan:
+            return god_plan["required_sections"]
+        
+        # Fallback: check product_type in god_plan
+        product_type = ""
+        if god_plan and "product_type" in god_plan:
+            product_type = god_plan["product_type"].lower()
+        
+        # Add product-specific sections
+        extra_sections = []
+        for key, sections in product_specific.items():
+            if key in product_type:
+                extra_sections.extend(sections)
+        
+        return core_sections + extra_sections
 
     def generate_section(self, section: str, context: PRDContext,
                          research_summary: str, god_plan: dict,
                          engineering_feedback: str = "") -> List[str]:
         """Generate 3 detailed option drafts for a single PRD section."""
+        
+        log_agent_start(prd_logger, "PRDGenerator", f"Generating: {section}")
 
         section_guide = self._get_section_guide(section)
         feedback_block = ""
@@ -876,25 +1015,23 @@ class PRDGeneratorAgent(BaseAgent):
 {engineering_feedback}
 """
 
-        prompt = f"""You are a top-tier Product Manager.
+        prompt = f"""You are a Senior Product Manager creating a detailed, production-ready PRD.
 
 ## 🎯 TASK
-Generate EXACTLY 3 distinct options for a PRD section.
+Generate EXACTLY 3 distinct options for a PRD section. Each option should be comprehensive, actionable, and ready for engineering, design, and business teams.
 
 ## 🧠 THINKING MODEL
-Option 1: Bold (high ambition, differentiated)
-Option 2: Balanced (practical, scalable)
-Option 3: MVP (lean, fast execution)
+Option 1: Bold (high ambition, differentiated) - Maximum features, futuristic approach
+Option 2: Balanced (practical, scalable) - Right mix of ambition and feasibility  
+Option 3: MVP (lean, fast execution) - Minimum viable with clear path to scale
 
-## ⚠️ RULES
-- No repetition across options
-- No vague phrases
-- Must be structured and actionable
-- Include metrics or logic where possible
-- Start with a 2-3 sentence plain-English explanation of WHAT this section is and WHY it matters
-- Use bullet points, numbered lists, tables, and clear headers
-- Include exact numbers, specific features, concrete user flows, and measurable outcomes
-- Minimum 400 words per option. Be thorough, not brief.
+## ⚠️ CRITICAL RULES
+- NO repetition across options - each must be fundamentally different
+- NO vague phrases like "user-friendly" or "efficient" without specifics
+- Be STRUCTURED with headers, bullet points, numbered lists, and tables
+- Include EXACT numbers, metrics, timelines, and specific features
+- Minimum 500 words per option - be thorough
+- Include user flows, edge cases, and technical considerations where relevant
 
 CONTEXT:
 - User's Idea: {context.idea}
@@ -916,20 +1053,26 @@ Label them clearly as "--- OPTION 1 ---", "--- OPTION 2 ---", "--- OPTION 3 ---"
 
 ## 📤 OUTPUT FORMAT
 Each option must be labeled and distinct. No repetition across options.
+Include:
+- Specific metrics and KPIs
+- User flows with steps
+- Technical considerations
+- Edge cases and failure handling
+- Timeline estimates where applicable
 """
         try:
             raw = self._call_llm(prompt, f"Generating section: {section}")
             options = self._parse_three_options(raw)
+            
+            total_words = sum(len(opt.split()) for opt in options)
+            log_section_generated(prd_logger, section, total_words, len(options))
+            log_agent_end(prd_logger, "PRDGenerator", f"COMPLETE | {section}")
+            
             return options
         except Exception as e:
             error_msg = str(e)
-            print(f"  ❌ PRD Generator FAILED for '{section}': {error_msg[:200]}")
-            # Check for quota/rate limit errors - trigger global switch
-            if ("429" in error_msg or "quota" in error_msg.lower() or "ResourceExhausted" in error_msg) and not self.using_openai:
-                BaseAgent._switch_to_openai_global()
-                # Retry with OpenAI - recursive call
-                return self.generate_section(section, context, research_summary, god_plan, engineering_feedback)
-            # Re-raise other errors
+            prd_logger.error(f"  ❌ PRD Generator FAILED for '{section}': {error_msg[:200]}")
+            log_error(prd_logger, "PRDGenerator_section", error_msg, f"Section: {section}")
             raise
 
     def _parse_three_options(self, raw: str) -> List[str]:
@@ -969,58 +1112,372 @@ Each option must be labeled and distinct. No repetition across options.
         return options[:3]
 
     def _get_section_guide(self, section: str) -> str:
-        """Section-specific writing instructions."""
+        """Section-specific writing instructions - comprehensive for ZERO knowledge readers."""
         guides = {
-            "Executive Summary": """Write a concise overview covering: what the product does, who it serves,
-key value proposition, high-level approach, and expected impact. Think of this as the "elevator pitch"
-plus a summary of the entire document. A CEO should be able to read ONLY this section and understand
-the full picture.""",
+            "Problem Statement": """CRITICAL: Write for someone who knows NOTHING about this product.
 
-            "Problem Statement": """Clearly define the problem: who experiences it, how painful it is,
-what the current workarounds are, why existing solutions fail, quantitative impact (lost revenue,
-wasted time, user drop-off), and why NOW is the right time to solve it. Include real-world examples.""",
+Define the problem with absolute clarity:
+- WHO experiences this problem? (Specific user segments)
+- WHAT exactly is the problem? (Concrete description)
+- WHEN does it occur? (Situations, contexts)
+- WHERE does it happen? (Physical/digital locations)
+- WHY does it matter? (Quantify impact - lost revenue, time wasted, user drop-off)
+- What's the current workaround? (How do users solve it today?)
+- Why do current solutions fail? (Gaps in existing products)
 
-            "Solution Overview": """Describe what you're building: the core product concept, key features
-at a high level, how it differs from competitors, the technical approach in simple terms, and core
-user experience. Include a "before vs after" comparison showing the world without and with this product.""",
+Include real-world examples, specific scenarios, and quantitative data where possible.
+Example: "40% of viewers report abandoning streams due to inability to easily create clips" 
+This should be written at a level where even someone unfamiliar with streaming can understand.""",
 
-            "User Personas": """Create 3-4 detailed user personas with: Name, Role, Age range,
-Technical skill level, Goals, Pain points, How they'd use this product, Quote that captures
-their frustration, and Success scenario. Make personas feel like real people.""",
+            "Objectives": """CRITICAL: Write SMART objectives. 
 
-            "User Stories & Flows": """Write user stories in format: "As a [user], I want [goal]
-so that [benefit]". Include: primary user journeys (step-by-step), alternative flows, error
-handling flows, edge cases, and acceptance criteria for each story. Be extremely specific.""",
+Define quantifiable objectives:
+- PRIMARY GOALS: Top 3-5 goals with specific targets (e.g., "Enable frictionless clip creation" → "90% of users can create clip in <10 seconds")
+- SECONDARY GOALS: Supporting objectives
+- Quantify with competitor benchmarks if available
+- Include 30/60/90 day targets where applicable
+- Format: Objective → Metric → Target → Timeline
 
-            "Functional Requirements": """List every feature with: Feature ID, Name, Description,
-Priority (P0/P1/P2/P3), User story reference, Acceptance criteria, Dependencies. Organize by
-feature area. Include both obvious features and subtle ones (notifications, settings, permissions).""",
+Example: "Drive viral distribution" → "Viral coefficient K > 1" → "K platform = 1.2" → "6 months"""",
 
-            "Non-Functional Requirements": """Cover: Performance (response times, throughput),
-Scalability (concurrent users, data volume), Security (authentication, encryption, compliance),
-Reliability (uptime SLA, disaster recovery), Accessibility (WCAG compliance), and Localization.
-Include specific measurable targets for each.""",
+            "Core Product Principles": """CRITICAL: Define fundamental rules that guide ALL product decisions.
 
-            "Technical Architecture": """Describe: System architecture (monolith/microservices),
-Technology stack with justification, Database design, API specifications, Third-party integrations,
-Infrastructure (cloud provider, deployment), CI/CD pipeline, and Monitoring/observability.
-Include a text-based architecture diagram description.""",
+These principles should be:
+- Simple and memorable
+- Actionable (can guide decisions)
+- Universal (apply to all features)
 
-            "Business Requirements & Monetization": """Cover: Revenue model, Pricing strategy,
-Cost structure, Unit economics, Go-to-market plan, Partnerships needed, Legal/compliance requirements,
-Customer acquisition strategy, and 3-year financial projections. Be specific about numbers.""",
+Examples from reference PRD:
+- Ownership → Streamer (always)
+- Attribution → Creator (viewer/streamer/uploader/AI)  
+- Discovery → Centralised under streamer
+- Safety → No clip goes live without moderation clearance
+- Consistency → Same lifecycle for all clip types
+- Low latency → Clip creation should feel instant
 
-            "Implementation Roadmap": """Create a phased plan: Phase 1 (MVP - what, when, who),
-Phase 2 (Growth features), Phase 3 (Scale & optimize). For each phase: specific deliverables,
-team composition, dependencies, testing approach, and rollout strategy. Include week/month estimates.""",
+Each principle should have a one-line explanation of WHY it matters.""",
 
-            "Risks & Mitigations": """Identify risks across: Technical (scalability, dependencies),
-Business (market timing, competition), Operational (team, process), Legal/Compliance, and Financial.
-For each risk: likelihood (H/M/L), impact (H/M/L), mitigation strategy, contingency plan, and owner.""",
+            "Scope": """CRITICAL: Clear boundaries to prevent scope creep.
 
-            "Success Metrics & KPIs": """Define: North Star metric, Primary KPIs (3-5) with specific
-targets, Supporting metrics, Leading vs lagging indicators, Measurement methodology, Reporting
-cadence, and Dashboard requirements. Include 30/60/90-day targets.""",
+4.1 IN SCOPE (V1):
+- What features/functionality ARE included
+- What user flows ARE supported
+
+4.2 OUT OF SCOPE (V1):
+- What is explicitly NOT included in V1
+- What will be addressed in future phases
+- Be specific (not vague)
+
+Example:
+- IN: Clip creation from live stream, clip creation from VOD, clip upload
+- OUT: Advanced AI clip generation, clip editing beyond trimming/framing""",
+
+            "User Roles": """CRITICAL: Define ALL user types who interact with the product.
+
+For each role, define:
+- Role Name (e.g., Streamer, Viewer, Content Manager, Moderator)
+- Description (what they do)
+- Permissions/Access Level
+- Goals (what they want to achieve)
+- Pain points (what frustrates them)
+
+Include both internal and external users.
+Example format:
+1. Streamer
+   - Creates and streams content
+   - Can create clips, upload clips, manage their clips
+   - Goals: Grow audience, monetize content
+2. Viewer
+   - Watches streams/VODs
+   - Can create clips, share clips
+   - Goals: Discover content, share with friends""",
+
+            "User Flows": """CRITICAL: Step-by-step flows for EVERY major user journey.
+
+For each flow include:
+- PRECONDITIONS (what must be true before starting)
+- PRIMARY FLOW (numbered steps with UI elements)
+- ALTERNATIVE FLOWS (what if user takes different path)
+- ERROR HANDLING (what goes wrong and how to recover)
+- EDGE CASES (unusual but possible scenarios)
+- ACCEPTANCE CRITERIA (how do we know it worked)
+
+Use standard format like reference PRD:
+6.1 Live Clip Creation
+- Preconditions: Stream is live, Buffer available (min 90 sec)
+- Max clip duration: 90 sec, Min: 10 sec
+- Flow: User taps Clip → System captures last 90-sec buffer → Opens editor → User trims → User adds title/tags → User publishes OR shares
+
+Include all possible paths (success, failure, cancellation).""",
+
+            "Functional Requirements": """CRITICAL: Every feature with complete specification.
+
+For each feature:
+- Feature ID: Unique identifier (e.g., CGW-1)
+- Name: Clear feature name
+- Description: What it does
+- Priority: P0 (must have), P1 (should have), P2 (nice to have)
+- User Story Reference: Which user story it fulfills
+- Acceptance Criteria: How to verify it works (specific, testable)
+- Dependencies: What must be built first
+
+Organize by FEATURE AREA.
+Example format:
+Feature Area: Clip Generation Workflow
+- CGW-1, Live Stream Clip Generation, Users can generate clips from live streams with max 60 sec, P0, US-1, System processes within 10 seconds, None""",
+
+            "Non-Functional Requirements": """CRITICAL: Technical requirements that ensure quality.
+
+Cover with specific MEASUREABLE targets:
+- PERFORMANCE: Response times, throughput (e.g., <200ms for clip generation)
+- SCALABILITY: Concurrent users, data volume (e.g., support 10,000 concurrent users)
+- SECURITY: Authentication, encryption, compliance (e.g., OAuth 2.0, AES-256, GDPR)
+- RELIABILITY: Uptime SLA, disaster recovery (e.g., 99.95% uptime)
+- ACCESSIBILITY: WCAG compliance level
+- LOCALIZATION: Supported languages, regional compliance
+
+Table format with metrics and targets is preferred.""",
+
+            "Technical Architecture": """CRITICAL: Complete technical specification for engineers.
+
+Must include:
+- SYSTEM ARCHITECTURE: Monolith or Microservices? Diagram description
+- TECHNOLOGY STACK: Languages, frameworks, databases with JUSTIFICATION
+- DATABASE DESIGN: Collections/tables, relationships, schema
+- API SPECIFICATIONS: REST/GraphQL endpoints, request/response format
+- THIRD-PARTY INTEGRATIONS: External services, dependencies
+- INFRASTRUCTURE: Cloud provider, deployment strategy
+- CI/CD PIPELINE: Build, test, deploy process
+- MONITORING: What metrics to track, observability
+
+Include text-based architecture diagram.""",
+
+            "Business Requirements & Monetization": """CRITICAL: How the product makes money.
+
+Cover:
+- REVENUE MODEL: How does the product generate income? (ads, subscriptions, transaction fees)
+- PRICING STRATEGY: Tier structure, discounts
+- COST STRUCTURE: Development, marketing, operations, staffing
+- UNIT ECONOMICS: CAC, CLV, ARPU, LTV
+- GO-TO-MARKET PLAN: Launch strategy, customer acquisition
+- PARTNERSHIPS NEEDED: External relationships
+- LEGAL/COMPLIANCE: Terms of service, content ownership
+- FINANCIAL PROJECTIONS: 3-year revenue/expense projections
+
+Include specific numbers, not vague statements.""",
+
+            "Implementation Roadmap": """CRITICAL: Phased delivery plan.
+
+For each PHASE:
+- OBJECTIVE: What are we achieving?
+- DELIVERABLES: Specific features/功能
+- TIMELINE: Start/end dates or week numbers
+- TEAM COMPOSITION: Roles needed
+- DEPENDENCIES: What must be ready first
+- TESTING APPROACH: Unit, integration, UAT
+- ROLLOUT STRATEGY: How to release (beta, gradual, big bang)
+
+Reference PRD format:
+Phase 1: MVP (Weeks 1-12)
+- Objective: Launch basic clip feature
+- Deliverables: Clip generation, upload, sharing
+- Team: 2 Backend, 1 Frontend, 1 QA, 1 Designer""",
+
+            "Risks & Mitigations": """CRITICAL: What could go wrong and how to prevent it.
+
+For each RISK identify:
+- CATEGORY: Technical/Business/Operational/Legal/Financial
+- LIKELIHOOD: H (High), M (Medium), L (Low)
+- IMPACT: H/M/L
+- MITIGATION STRATEGY: What we're doing to prevent
+- CONTINGENCY PLAN: What if it happens anyway
+- OWNER: Who is responsible
+
+Example:
+- Scalability Risk, Likelihood: H, Impact: H
+- Mitigation: Invest in auto-scaling infrastructure
+- Contingency: Queue system for peak hours
+- Owner: Engineering Team""",
+
+            "Success Metrics & KPIs": """CRITICAL: How we measure if product succeeds.
+
+Define:
+- NORTH STAR METRIC: The one metric that matters most
+- PRIMARY KPIs: 3-5 metrics with specific TARGETS
+- SUPPORTING METRICS: Secondary metrics
+- MEASUREMENT METHODOLOGY: How to calculate each
+- REPORTING CADENCE: Daily/weekly/monthly
+- DASHBOARD REQUIREMENTS: What to visualize
+
+Include 30/60/90-day targets.
+Example:
+- Clip creation rate: 95% success rate
+- User engagement: 10% increase in session time
+- Viral coefficient: K > 1""",
+
+            "Analytics": """CRITICAL: What events to track and why.
+
+Define:
+- GLOBAL METRICS: Platform-level metrics across all features
+- FEATURE-SPECIFIC METRICS: Metrics unique to this product
+- EVENT DEFINITIONS: What counts as a view, completion, share, etc.
+- FORMULAS: How to calculate viral coefficient, conversion rates
+- FUTURE SCOPE: What we'll add later
+
+Reference PRD format:
+- Clip creation rate: Number of clips created / Number of streams
+- Viral coefficient: (Total Shares / Total Active Users) × (Clicks / Shares) × (New Users / Clicks)""",
+
+            "Edge Cases": """CRITICAL: Exhaustive list of what could go wrong.
+
+Categorize:
+- CONTENT: Duplicate detection, wrong attribution, deleted content
+- USER: Banned users, inactive accounts, permissions issues
+- SYSTEM: Encoding failures, CDN failures, database timeouts
+- UPLOAD: Partial uploads, corrupted files, format issues
+- NETWORK: Offline users, slow connections, timeouts
+
+For each:
+- SCENARIO: What happens
+- HANDLING: How the system responds
+- USER FEEDBACK: What does the user see
+
+Example:
+- Duplicate clips → Dedupe via hash → Show "similar clip exists" message
+- CDN failure → Fallback origin → Retry with original server""",
+
+            "Feed": """CRITICAL: For content platforms - how content is discovered.
+
+Define:
+- PRINCIPLES: What's the primary goal (acquisition vs engagement vs discovery)
+- SURFACE RULES: Where does content appear (home, profile, category pages)
+- PLATFORM BEHAVIOR: Desktop Web vs Mobile App vs External URLs
+- ENTRY POINTS: How users access the feed
+- VISIBILITY THRESHOLDS: When does content appear (e.g., after 100 clips exist)
+- SCORING ALGORITHM: How content is ranked (views, shares, completion rate)
+- BATCH COMPOSITION: How content is batched and prefetched
+- GUARDRAILS: What should NEVER be shown
+
+Reference PRD has detailed formula for scoring:
+Score = (completion_rate × W_completion) + (share_rate × W_share) + (follow_rate × W_follow) - (skip_rate × W_skip)""",
+
+            "Moderation & NSFW System": """CRITICAL: For UGC platforms - how content is reviewed.
+
+Define:
+- AUTOMATED MODERATION: AI/ML detection inputs (video, audio, text)
+- MANUAL MODERATION: Human review workflow, tool requirements
+- MODERATION CRITERIA: What gets approved/rejected
+- SLA: How quickly to review (e.g., 30 minutes)
+- EDGE CASES: Conflict resolution, escalations
+- NSFW SCORE: How to measure appropriateness
+
+Include flow: Content submitted → Auto-check → Score → Approve/Reject/Manual Review""",
+
+            "AI Design for Clips": """CRITICAL: For AI/ML features - how the algorithm works.
+
+Define:
+- SIGNALS: What inputs does AI use (chat spikes, audio peaks, viewer spikes)
+- FORMULA: Exact scoring equation (e.g., Score = w1×chat + w2×audio + w3×viewers)
+- WEIGHTS: What are the weight values and why
+- OUTPUT: What does AI generate (top 5-10 clips, 30 sec clips)
+- PROCESSING: When does it run (stream end, periodic)
+- LIMITATIONS: Constraints on AI output
+- HUMAN OVERRIDE: Can users edit AI-generated clips
+
+Example:
+- Signal: Chat spike = 5x normal messages
+- Score = 0.4(chat) + 0.3(audio) + 0.3(viewers)
+- Output: Top 5 clips per stream, 30 seconds each""",
+
+            "Monetization": """CRITICAL: Revenue strategy for the product.
+
+Define:
+- REVENUE SOURCES: Ads, subscriptions, transaction fees, sponsorships
+- REVENUE SPLIT: How is revenue shared (creator vs platform)
+- PRICING: How much do users pay
+- EDGE CASES: What happens to revenue if creator deleted, banned
+
+Example:
+- Banner ads displayed on clips
+- Revenue split: 50% streamer, 50% platform
+- Creator deleted → revenue goes to streamer
+- Streamer banned → revenue frozen""",
+
+            "AI Design": """CRITICAL: For AI/ML products - detailed algorithm specification.
+
+Define:
+- SIGNALS: What data inputs the model uses
+- MODEL ARCHITECTURE: Type of model, training approach
+- TRAINING DATA: What data is used to train
+- FORMULA: Exact equation for scoring/ranking
+- WEIGHTS: Parameter values with justification
+- OUTPUT: What the model produces
+- THRESHOLDS: Cutoff points for decisions
+- MONITORING: How to track model performance""",
+        }
+        return guides.get(section, f"""Write comprehensive content for '{section}' section.
+Assume the reader has ZERO knowledge about this product.
+- Start with clear definitions
+- Use specific examples
+- Include quantitative data where possible
+- Structure with headers, bullet points, and tables
+- Minimum 500 words""")
+- Secondary Goals (incentivize viewers to become contributors, use AI for auto-scaling)
+- Quantify with specific targets and timelines""",
+
+            "Core Product Principles": """Define fundamental principles that guide the product:
+- Ownership (who owns the content)
+- Attribution (who gets credit - viewer/streamer/uploader/AI)
+- Discovery (where clips are surfaced)
+- Safety (moderation requirements)
+- Consistency (lifecycle for all clip types)
+- Low latency (instant clip creation feel)""",
+
+            "Scope": """Define what's IN scope and OUT of scope:
+- 4.1 Clip Types (Live, VOD, Upload)
+- 4.2 Out of Scope (V1) - clip editing beyond trimming, advanced AI generation
+- Clear boundaries to prevent scope creep""",
+
+            "User Flows": """Create detailed user flows for each clip type:
+- 6.1 Live Clip Creation: Preconditions, buffer requirements (90 sec), max/min duration, trim range, layout options, title/tags/category, publish/share flows, failure handling
+- 6.2 VOD Clip Creation: Timeline selection, trim, publish
+- 6.3 Upload Clip Flow: Constraints (max 90sec, 200MB, formats MP4/MOV), validation, status flow (PENDING_PROCESSING -> Success)
+- Include step-by-step flows with all UI elements and decisions""",
+
+            "Feed": """Define feed behavior and discovery:
+- 7.1 Principle: acquisition and engagement first, discovery second
+- 7.2 Surface Rules by Platform: Desktop Web, Mobile App, External/Shared URL
+- Entry points, visibility thresholds, placement, layout, navigation, clip viewer behavior
+- 7.4 Suggested Clips Logic: Definitions (view, completion, skip, share), guardrails, supply gate, scoring formula, batch composition, fallback rules
+- 7.5 Queue State Management, 7.6 System Config, 7.7 Future Scope""",
+
+            "Moderation & NSFW System": """Define moderation approach:
+- 8.1 Automated Moderation: Inputs (video frames, audio, text, category), reuse existing NSFW model
+- 8.2 Manual Moderation (Retool): Required features (clip preview, metadata view, NSFW score, approve/reject/shadow ban), SLA (review within 30 mins)
+- Edge cases and conflict resolution""",
+
+            "Monetization": """Define revenue model (future scope):
+- 9.1 Revenue Sources: Banner ads
+- 9.2 Revenue Split: Creator vs platform
+- 9.3 Edge Cases: Creator deleted → revenue to streamer, Streamer banned → revenue frozen""",
+
+            "AI Design for Clips": """Define AI-driven clip generation:
+- 10.1 Signals: Chat spikes, audio peaks, viewer spikes
+- 10.2 Formula: Score = w1(chat) + w2(audio) + w3(viewers)
+- 10.3 Output: Top 5-10 clips per stream, 30 sec before and after timestamp
+- Include detailed algorithm and scoring weights""",
+
+            "Edge Cases": """Define exhaustive edge cases:
+- 11.1 Content: Duplicate clips (dedupe via hash), wrong streamer tagged (allow report)
+- 11.2 User: Creator banned → hide attribution, Streamer banned → remove clips
+- 11.3 System: Encoding failure (retry 3 times), CDN failure (fallback origin)
+- 11.4 Upload: Partial upload (retry), Corrupted file (reject)""",
+
+            "Analytics": """Define metrics and events:
+- Global metrics: Clip creation rate (Livestream vs VOD), Viral coefficient formula
+- Platform-level metrics: Views, likes, share, comments, New follow
+- Future scope: Detailed reports by category, country, top clips
+- Define calculation formulas explicitly""",
         }
         return guides.get(section, f"Write detailed, specific content for the '{section}' section.")
 
@@ -1056,13 +1513,12 @@ class EvaluatorAgent(BaseAgent):
                   (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Evaluator Agent",
-            error_logger,
-            openai_api_key
+            error_logger
         )
 
     def select_best(self, section: str, options: List[str], context: PRDContext) -> Tuple[str, str]:
@@ -1144,13 +1600,12 @@ class GapDetectorAgent(BaseAgent):
     - Missing metrics
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Gap Detector",
-            error_logger,
-            openai_api_key
+            error_logger
         )
 
     def detect_gaps(self, prd_content: str, new_user_input: str = "",
@@ -1217,13 +1672,12 @@ class EngineeringManagerAgent(BaseAgent):
     RULE: If ANY critical gap exists → reject
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "Engineering Manager",
-            error_logger,
-            openai_api_key
+            error_logger
         )
 
     def review(self, prd_content: str, context: PRDContext) -> EngineeringReview:
@@ -1297,13 +1751,12 @@ class VPProductAgent(BaseAgent):
     - Edge cases
     """
 
-    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None, openai_api_key: str = None):
+    def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
         super().__init__(
             gemini_api_key,
             ["gemini-2.0-flash", "gemini-2.0-flash-lite"],
             "VP Product",
-            error_logger,
-            openai_api_key
+            error_logger
         )
 
     def review(self, prd_content: str, context: PRDContext,
@@ -1389,34 +1842,34 @@ class PRDOrchestrator:
 
     def __init__(self, gemini_api_key: str, tavily_api_key: str = "",
                  google_api_key: str = "", google_cx: str = "",
-                 github_pat: str = "", github_repo: str = "",
-                 openai_api_key: str = None):
+                 github_pat: str = "", github_repo: str = ""):
 
         self.gemini_api_key = gemini_api_key
         self.github_pat = github_pat
         self.github_repo = github_repo
 
-        # Initialize error logger first
         self.error_logger = GitHubErrorLogger(github_pat, github_repo)
 
-        print("\n🧠 Initializing PRD Engine — 7 Agent System")
-        print("=" * 50)
-
-        # Initialize all 7 agents with ChatGPT fallback
-        self.god_agent = GodAgent(gemini_api_key, self.error_logger, openai_api_key)
-        self.classifier = ClassifierAgent(gemini_api_key, self.error_logger, openai_api_key)
+        prd_logger.info("=" * 50)
+        prd_logger.info("🧠 Initializing PRD Engine — 7 Agent System")
+        prd_logger.info("=" * 50)
+        
+        # Initialize all 7 agents
+        self.god_agent = GodAgent(gemini_api_key, self.error_logger)
+        self.classifier = ClassifierAgent(gemini_api_key, self.error_logger)
         self.researcher = ResearchAgent(
             gemini_api_key, tavily_api_key, google_api_key, google_cx,
-            github_pat, github_repo, self.error_logger, openai_api_key
+            github_pat, github_repo, self.error_logger
         )
-        self.generator = PRDGeneratorAgent(gemini_api_key, self.error_logger, openai_api_key)
-        self.evaluator = EvaluatorAgent(gemini_api_key, self.error_logger, openai_api_key)
-        self.gap_detector = GapDetectorAgent(gemini_api_key, self.error_logger, openai_api_key)
-        self.eng_manager = EngineeringManagerAgent(gemini_api_key, self.error_logger, openai_api_key)
-        self.vp_product = VPProductAgent(gemini_api_key, self.error_logger, openai_api_key)
+        self.generator = PRDGeneratorAgent(gemini_api_key, self.error_logger)
+        self.evaluator = EvaluatorAgent(gemini_api_key, self.error_logger)
+        self.gap_detector = GapDetectorAgent(gemini_api_key, self.error_logger)
+        self.eng_manager = EngineeringManagerAgent(gemini_api_key, self.error_logger)
+        self.vp_product = VPProductAgent(gemini_api_key, self.error_logger)
 
-        print("=" * 50)
-        print("✅ All 7 agents initialized\n")
+        prd_logger.info("=" * 50)
+        prd_logger.info("✅ All 7 agents initialized")
+        prd_logger.info("=" * 50)
 
     # -----------------------------------------------------------------
     # INITIAL GENERATION FLOW
@@ -1430,48 +1883,62 @@ class PRDOrchestrator:
 
         Returns: (success, docx_path, status_message, memory)
         """
+        prd_logger.info(f"🚀 Starting PRD generation for: {user_input[:100]}...")
+        
         try:
             if memory is None:
                 memory = PRDMemory()
             memory.user_inputs.append(user_input)
 
-            # ---- QUOTA CHECK: Test Gemini and switch to OpenAI if needed ----
-            self._progress(progress_callback, "🔍 Checking API quota status...")
-            if not self._check_gemini_quota():
-                self._progress(progress_callback, "⚠️ Gemini quota exhausted — switching to ChatGPT for all agents")
-                self._switch_all_agents_to_openai()
-
             # ---- STEP 1: God Agent plans workflow ----
             self._progress(progress_callback, "🎯 God Agent: Planning workflow...")
+            prd_logger.info("🎯 God Agent: Planning workflow...")
+            log_agent_start(prd_logger, "GodAgent", "Initial planning")
             god_plan = self.god_agent.plan_initial_workflow(user_input)
+            log_agent_end(prd_logger, "GodAgent", "COMPLETE")
 
             # ---- STEP 2: Classifier Agent ----
             self._progress(progress_callback, "📋 Classifier Agent: Analyzing input type...")
+            prd_logger.info("📋 Classifier Agent: Analyzing input type...")
+            log_agent_start(prd_logger, "ClassifierAgent", "Classify input")
             context = self.classifier.classify(user_input)
             memory.context = context
+            prd_logger.info(f"Classified as: {context.input_type} | Idea: {context.idea[:50]}...")
+            log_agent_end(prd_logger, "ClassifierAgent", "COMPLETE")
 
             # ---- STEP 3: Research Agent ----
             self._progress(progress_callback, "🔬 Research Agent: Searching Tavily + Google + Specter reports...")
+            prd_logger.info("🔬 Research Agent: Searching...")
+            log_agent_start(prd_logger, "ResearchAgent", "Research")
             queries = god_plan.get("research_queries", [
                 f"market analysis {context.idea}",
                 f"competitors {context.idea}",
                 f"technical challenges {context.idea}",
                 f"user needs {context.problem_statement}"
             ])
+            prd_logger.info(f"Research queries: {queries}")
             research_data = self.researcher.research(queries, memory)
             memory.research_memory.update(research_data.get("results_by_query", {}))
             context.research_data = research_data
+            prd_logger.info(f"Research complete: {len(research_data.get('results_by_query', {}))} query results")
+            log_agent_end(prd_logger, "ResearchAgent", "COMPLETE")
 
             # ---- STEP 4: Generate + Evaluate all sections ----
             self._progress(progress_callback, "✍️ PRD Generator: Creating detailed sections (3 options each)...")
+            prd_logger.info("✍️ PRD Generator: Creating detailed sections...")
+            
+            # Dynamically determine sections based on product type
+            sections_to_generate = PRDGeneratorAgent.get_sections_for_product(god_plan)
+            prd_logger.info(f"📋 Sections to generate: {sections_to_generate}")
             prd_sections = {}
-            total_sections = len(PRDGeneratorAgent.SECTIONS)
+            total_sections = len(sections_to_generate)
 
-            for i, section_name in enumerate(PRDGeneratorAgent.SECTIONS):
+            for i, section_name in enumerate(sections_to_generate):
                 self._progress(
                     progress_callback,
                     f"✍️ Generating section {i+1}/{total_sections}: {section_name}..."
                 )
+                prd_logger.info(f"Generating section {i+1}/{total_sections}: {section_name}")
 
                 # Generate 3 options
                 options = self.generator.generate_section(
@@ -1481,9 +1948,11 @@ class PRDOrchestrator:
                 )
 
                 # Evaluate and select best
+                log_agent_start(prd_logger, "EvaluatorAgent", f"Evaluate: {section_name}")
                 selected, rationale = self.evaluator.select_best(
                     section_name, options, context
                 )
+                log_agent_end(prd_logger, "EvaluatorAgent", f"COMPLETE | Selected option {options.index(selected)+1}")
 
                 prd_sections[section_name] = PRDSection(
                     title=section_name,
@@ -1495,6 +1964,7 @@ class PRDOrchestrator:
                 time.sleep(3)  # Rate limit protection
 
             memory.prd_state = prd_sections
+            prd_logger.info(f"✅ All {total_sections} PRD sections generated")
 
             # ---- STEP 5: Engineering Manager Review (with re-loop) ----
             prd_md = memory.get_prd_markdown()
@@ -1552,12 +2022,15 @@ class PRDOrchestrator:
             memory.version = 1
             success_msg = f"PRD v{memory.version} generated successfully!{github_msg}"
             self._progress(progress_callback, f"🎉 {success_msg}")
+            prd_logger.info(f"🎉 PRD generation complete: {success_msg}")
 
             return True, docx_path, success_msg, memory
 
         except Exception as e:
             error_msg = f"PRD generation failed: {str(e)}"
             tb = traceback.format_exc()
+            prd_logger.error(f"❌ PRD generation failed: {error_msg}")
+            log_error(prd_logger, "PRDOrchestrator", str(e), f"Input: {user_input[:200]}")
             self.error_logger.log_error("orchestrator_generate", str(e), tb, f"Input: {user_input[:200]}")
             return False, "", error_msg, memory
 
@@ -1581,11 +2054,6 @@ class PRDOrchestrator:
         try:
             memory.user_inputs.append(new_input)
             context = memory.context
-
-            # ---- QUOTA CHECK ----
-            if not self._check_gemini_quota():
-                self._progress(progress_callback, "⚠️ Gemini quota exhausted — switching to ChatGPT")
-                self._switch_all_agents_to_openai()
 
             # ---- STEP 1: God Agent interprets the update ----
             self._progress(progress_callback, "🎯 God Agent: Interpreting your update...")
@@ -1828,46 +2296,6 @@ p {{ line-height: 1.6; }}
     # -----------------------------------------------------------------
     # UTILITIES
     # -----------------------------------------------------------------
-
-    def _check_gemini_quota(self) -> bool:
-        """Quick check if Gemini API quota is available. Returns True if available, False if exhausted."""
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        if not openai_key or not OPENAI_AVAILABLE:
-            return True  # Can't switch to OpenAI, return True to try Gemini
-        
-        try:
-            test_model = genai.GenerativeModel("gemini-2.0-flash-lite")
-            test_response = test_model.generate_content(
-                "Hi",
-                generation_config=genai.GenerationConfig(max_output_tokens=5)
-            )
-            return True  # Gemini works
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str:
-                return False  # Quota exhausted
-            return True  # Other error, try anyway
-
-    def _switch_all_agents_to_openai(self):
-        """Switch all agents to use OpenAI ChatGPT instead of Gemini."""
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        if not openai_key or not OPENAI_AVAILABLE:
-            return
-        
-        agents = [
-            self.god_agent, self.classifier, self.researcher,
-            self.generator, self.evaluator, self.gap_detector,
-            self.eng_manager, self.vp_product
-        ]
-        
-        for agent in agents:
-            if hasattr(agent, 'openai_model') and agent.openai_model is None:
-                try:
-                    agent.openai_model = openai.OpenAI(api_key=openai_key)
-                    agent.using_openai = True
-                    print(f"  ⚡ {agent.agent_name} → switched to ChatGPT")
-                except Exception as e:
-                    print(f"  ❌ Failed to switch {agent.agent_name}: {e}")
 
     def _progress(self, callback, message: str):
         """Send progress update."""
