@@ -63,6 +63,20 @@ def get_groq_client() -> Groq:
         raise ValueError("GROQ_API_KEY not set")
     return Groq(api_key=api_key)
 
+CLAUDE_AVAILABLE = False
+try:
+    import anthropic
+    from anthropic import Anthropic
+    CLAUDE_AVAILABLE = True
+except ImportError:
+    print("⚠️ anthropic package not installed — Claude fallback disabled")
+
+def get_claude_client() -> Anthropic:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+    return Anthropic(api_key=api_key)
+
 # Optional imports with graceful fallback
 try:
     from tavily import TavilyClient
@@ -260,7 +274,9 @@ class BaseAgent:
     
     _client = None  # Shared Gemini client
     _groq_client = None  # Shared Groq client
+    _claude_client = None  # Shared Claude client
     _use_groq_global = False  # Global flag - once set, all agents use Groq
+    _use_claude_global = False  # Global flag - once set, all agents use Claude
     _quota_checked = False  # Track if quota check was done
     
     def __init__(self, gemini_api_key: str, preferred_models: List[str],
@@ -271,7 +287,22 @@ class BaseAgent:
             BaseAgent._quota_checked = True
             BaseAgent._check_quota_and_set_provider(gemini_api_key)
         
-        if BaseAgent._use_groq_global:
+        if BaseAgent._use_claude_global:
+            # Use Claude directly (quota exhausted or preferred)
+            if BaseAgent._claude_client is None and CLAUDE_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+                try:
+                    BaseAgent._claude_client = get_claude_client()
+                except Exception as e:
+                    log_error(prd_logger, "claude_init", str(e), "Failed to init Claude")
+            
+            self.client = None
+            self.model_name = None
+            self.groq_model = None
+            self.claude_model = BaseAgent._claude_client
+            self.using_claude = True
+            self.using_groq = False
+            prd_logger.info(f"  ✅ {agent_name} -> Claude (claude-3-haiku)")
+        elif BaseAgent._use_groq_global:
             # Use Groq directly (quota exhausted)
             if BaseAgent._groq_client is None and GROQ_AVAILABLE and os.environ.get("GROQ_API_KEY"):
                 try:
@@ -283,6 +314,7 @@ class BaseAgent:
             self.model_name = None
             self.groq_model = BaseAgent._groq_client
             self.using_groq = True
+            self.using_claude = False
             prd_logger.info(f"  ✅ {agent_name} -> Groq (llama-3.3-70b-versatile)")
         else:
             # Try Gemini first
@@ -300,7 +332,27 @@ class BaseAgent:
 
     @classmethod
     def _check_quota_and_set_provider(cls, gemini_api_key: str):
-        """Check Gemini quota once at start. If exhausted, switch all agents to Groq globally."""
+        """Check Gemini quota once at start. If exhausted, switch to Claude or Groq globally."""
+        error_str = ""
+        
+        # Try Claude first as primary fallback
+        if CLAUDE_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+            try:
+                test_client = get_claude_client()
+                test_response = test_client.messages.create(
+                    model="claude-3-haiku-20240307",
+                    max_tokens=10,
+                    messages=[{"role": "user", "content": "Hi"}]
+                )
+                if test_response.content[0].text:
+                    cls._use_claude_global = True
+                    prd_logger.info("✅ Using Claude as primary (Gemini not checked or quota available)")
+                    return
+            except Exception as e:
+                error_str = str(e)
+                prd_logger.warning(f"Claude check failed: {error_str[:100]}")
+        
+        # Check Groq availability
         if not GROQ_AVAILABLE or not os.environ.get("GROQ_API_KEY"):
             prd_logger.info("Groq not available, using Gemini")
             return
@@ -316,7 +368,8 @@ class BaseAgent:
             prd_logger.info("✅ Gemini quota available")
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str:
+            error_upper = error_str.upper()
+            if "429" in error_str or "quota" in error_str.lower() or "RESOURCE_EXHAUSTED" in error_upper:
                 cls._use_groq_global = True
                 prd_logger.warning("⚠️ Gemini quota exhausted! Switching ALL agents to Groq globally")
             else:
@@ -328,6 +381,17 @@ class BaseAgent:
         
         for attempt in range(max_retries):
             try:
+                if self.using_claude and self.claude_model:
+                    log_api_call(prd_logger, "Claude", "messages.create", "CALL", f"Attempt {attempt+1}")
+                    response = self.claude_model.messages.create(
+                        model="claude-3-haiku-20240307",
+                        max_tokens=4096,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    result = response.content[0].text.strip()
+                    log_api_call(prd_logger, "Claude", "messages.create", "SUCCESS", f"Response: {len(result)} chars")
+                    return result
+                
                 if self.using_groq and self.groq_model:
                     log_api_call(prd_logger, "Groq", "chat.completions", "CALL", f"Attempt {attempt+1}")
                     response = self.groq_model.chat.completions.create(
@@ -349,17 +413,37 @@ class BaseAgent:
                 return result
             except Exception as e:
                 error_str = str(e)
+                error_lower = error_str.lower()
+                error_upper = error_str.upper()
                 
-                # If quota exhausted during execution, switch globally to Groq
-                if ("429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str):
-                    if not BaseAgent._use_groq_global and GROQ_AVAILABLE:
-                        BaseAgent._use_groq_global = True
-                        BaseAgent._groq_client = get_groq_client()
-                        self.groq_model = BaseAgent._groq_client
-                        self.using_groq = True
-                        self.client = None
-                        prd_logger.warning(f"  ⚠️ {self.agent_name} -> Gemini quota exhausted! Switching ALL agents to Groq globally")
-                        continue
+                # If quota exhausted, try Claude first, then Groq
+                if ("429" in error_str or "quota" in error_lower or "RESOURCE_EXHAUSTED" in error_upper or "RESOURCEEXHAUSTED" in error_upper or "rate_limit" in error_lower):
+                    # Try Claude as first fallback
+                    if not BaseAgent._use_claude_global and CLAUDE_AVAILABLE and os.environ.get("ANTHROPIC_API_KEY"):
+                        try:
+                            BaseAgent._use_claude_global = True
+                            BaseAgent._claude_client = get_claude_client()
+                            self.claude_model = BaseAgent._claude_client
+                            self.using_claude = True
+                            self.client = None
+                            self.using_groq = False
+                            prd_logger.warning(f"  ⚠️ {self.agent_name} -> Gemini quota exhausted! Switching ALL agents to Claude")
+                            continue
+                        except Exception:
+                            pass
+                    # Try Groq as second fallback
+                    if not BaseAgent._use_groq_global and GROQ_AVAILABLE and os.environ.get("GROQ_API_KEY"):
+                        try:
+                            BaseAgent._use_groq_global = True
+                            BaseAgent._groq_client = get_groq_client()
+                            self.groq_model = BaseAgent._groq_client
+                            self.using_groq = True
+                            self.client = None
+                            self.using_claude = False
+                            prd_logger.warning(f"  ⚠️ {self.agent_name} -> Gemini quota exhausted! Switching ALL agents to Groq")
+                            continue
+                        except Exception:
+                            pass
                 
                 log_error(prd_logger, self.agent_name, error_str, f"Attempt {attempt+1}/{max_retries}")
                 
