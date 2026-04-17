@@ -1032,18 +1032,12 @@ class PRDGeneratorAgent(BaseAgent):
     """
     ✍️ PRD GENERATOR AGENT — Top-tier Product Manager.
 
-    TASK: Generate EXACTLY 3 distinct options for a PRD section.
-
-    THINKING MODEL:
-    Option 1: Bold (high ambition, differentiated)
-    Option 2: Balanced (practical, scalable)
-    Option 3: MVP (lean, fast execution)
+    TASK: Generate exactly 1 comprehensive PRD section (no options).
 
     RULES:
-    - No repetition across options
-    - No vague phrases
-    - Must be structured and actionable
-    - Include metrics or logic where possible
+    - Must be clear, specific, actionable
+    - Include metrics where possible
+    - Ready for engineering team
     """
 
     SECTIONS = []  # Will be set dynamically based on product type
@@ -1110,7 +1104,7 @@ class PRDGeneratorAgent(BaseAgent):
     def generate_section(self, section: str, context: PRDContext,
                          research_summary: str, god_plan: dict,
                          engineering_feedback: str = "") -> List[str]:
-        """Generate 3 detailed option drafts for a single PRD section."""
+        """Generate 1 comprehensive PRD section (no options)."""
         
         log_agent_start(prd_logger, "PRDGenerator", f"Generating: {section}")
 
@@ -1118,61 +1112,42 @@ class PRDGeneratorAgent(BaseAgent):
         feedback_block = ""
         if engineering_feedback:
             feedback_block = f"""
-⚠️ ENGINEERING FEEDBACK (Address these issues in your rewrite):
+⚠️ ENGINEERING FEEDBACK (Address these):
 {engineering_feedback}
 """
 
-        prompt = f"""You are a Senior Product Manager creating a detailed, production-ready PRD.
+        prompt = f"""You are a Senior Product Manager creating a production-ready PRD section.
 
-##  TASK
-Generate EXACTLY 3 distinct options for a PRD section. Each option should be comprehensive, actionable, and ready for engineering, design, and business teams.
+## TASK
+Generate exactly 1 comprehensive PRD section. Be specific, actionable, and ready for engineering.
 
-##  THINKING MODEL
-Option 1: Bold (high ambition, differentiated) - Maximum features, futuristic approach
-Option 2: Balanced (practical, scalable) - Right mix of ambition and feasibility  
-Option 3: MVP (lean, fast execution) - Minimum viable with clear path to scale
-
-## ⚠️ CRITICAL RULES
-- NO repetition across options - each must be fundamentally different
-- NO vague phrases like "user-friendly" or "efficient" without specifics
-- Be STRUCTURED with headers, bullet points, numbered lists, and tables
-- Include EXACT numbers, metrics, timelines, and specific features
-- Minimum 500 words per option - be thorough
-- Include user flows, edge cases, and technical considerations where relevant
+## RULES
+- Be clear and specific (no vague phrases)
+- Include metrics and timelines where possible
+- Use headers, bullet points, numbered lists
+- Be thorough but concise
 
 CONTEXT:
-- User's Idea: {context.idea}
-- Problem Being Solved: {context.problem_statement}
+- Idea: {context.idea}
+- Problem: {context.problem_statement}
 - Input Type: {context.input_type}
-- Focus Areas: {json.dumps(god_plan.get('focus_areas', []))}
-- Special Instructions: {god_plan.get('special_instructions', 'None')}
+- Focus: {json.dumps(god_plan.get('focus_areas', []))}
 
-RESEARCH INSIGHTS:
-{research_summary[:3000]}
+RESEARCH:
+{research_summary[:2000]}
 
 {feedback_block}
 
 SECTION: {section}
 {section_guide}
 
-Generate exactly 3 complete, distinct options for this section.
-Label them clearly as "--- OPTION 1 ---", "--- OPTION 2 ---", "--- OPTION 3 ---".
-
-##  OUTPUT FORMAT
-Each option must be labeled and distinct. No repetition across options.
-Include:
-- Specific metrics and KPIs
-- User flows with steps
-- Technical considerations
-- Edge cases and failure handling
-- Timeline estimates where applicable
+Generate 1 complete PRD section now.
 """
         try:
             raw = self._call_llm(prompt, f"Generating section: {section}")
-            options = self._parse_three_options(raw)
+            options = [raw]  # Single option
             
-            total_words = sum(len(opt.split()) for opt in options)
-            log_section_generated(prd_logger, section, total_words, len(options))
+            log_section_generated(prd_logger, section, len(raw.split()), 1)
             log_agent_end(prd_logger, "PRDGenerator", f"COMPLETE | {section}")
             
             return options
@@ -1229,7 +1204,7 @@ Define the problem with absolute clarity:
 - WHEN does it occur? (Situations, contexts)
 - WHERE does it happen? (Physical/digital locations)
 - WHY does it matter? (Quantify impact - lost revenue, time wasted, user drop-off)
-- What's the current workaround? (How do users solve it today?)
+- Current workaround (How do users solve it today)
 - Why do current solutions fail? (Gaps in existing products)
 
 Include real-world examples, specific scenarios, and quantitative data where possible.
@@ -1974,7 +1949,7 @@ class PRDOrchestrator:
             log_agent_end(prd_logger, "ResearchAgent", "COMPLETE")
 
             # ---- STEP 4: Generate + Evaluate all sections ----
-            self._progress(progress_callback, "✍️ PRD Generator: Creating detailed sections (3 options each)...")
+            self._progress(progress_callback, "✍️ PRD Generator: Creating sections...")
             prd_logger.info("✍️ PRD Generator: Creating detailed sections...")
             
             # Dynamically determine sections based on product type
@@ -1997,21 +1972,15 @@ class PRDOrchestrator:
                     god_plan
                 )
 
-                # Evaluate and select best
-                log_agent_start(prd_logger, "EvaluatorAgent", f"Evaluate: {section_name}")
-                selected, rationale = self.evaluator.select_best(
-                    section_name, options, context
-                )
-                log_agent_end(prd_logger, "EvaluatorAgent", f"COMPLETE | Selected option {options.index(selected)+1}")
-
+                # Use generated section directly (no evaluator needed)
                 prd_sections[section_name] = PRDSection(
                     title=section_name,
                     options=options,
-                    selected_option=selected,
-                    rationale=rationale
+                    selected_option=options[0] if options else "",
+                    rationale="Directly generated (no options)"
                 )
 
-                time.sleep(3)  # Rate limit protection
+                time.sleep(2)  # Rate limit protection
 
             memory.prd_state = prd_sections
             prd_logger.info(f"✅ All {total_sections} PRD sections generated")
@@ -2109,28 +2078,8 @@ class PRDOrchestrator:
                         research_data.get("summary", ""),
                         god_plan
                     )
-                    selected, rationale = self.evaluator.select_best(sec_name, options, context)
-                    memory.prd_state[sec_name].update(selected, rationale)
+                    memory.prd_state[sec_name].update(options[0] if options else "", "Direct generation")
                     time.sleep(1)
-
-            # ---- STEP 5: Engineering Manager Review ----
-            prd_md = memory.get_prd_markdown()
-            self._progress(progress_callback, "️ Engineering Manager: Reviewing updates...")
-            eng_review = self.eng_manager.review(prd_md, context)
-
-            if not eng_review.approved and eng_review.feedback_for_sections:
-                self._progress(progress_callback, " Addressing engineering feedback...")
-                for sec_name, feedback in eng_review.feedback_for_sections.items():
-                    if sec_name in memory.prd_state:
-                        options = self.generator.generate_section(
-                            sec_name, context,
-                            research_data.get("summary", ""),
-                            god_plan,
-                            engineering_feedback=feedback
-                        )
-                        selected, rationale = self.evaluator.select_best(sec_name, options, context)
-                        memory.prd_state[sec_name].update(selected, rationale)
-                        time.sleep(1)
 
             # ---- STEP 6: VP Product Review ----
             prd_md = memory.get_prd_markdown()
