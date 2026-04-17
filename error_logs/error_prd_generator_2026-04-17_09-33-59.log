@@ -1,0 +1,44 @@
+========================================
+ STREAMINTEL PRD ENGINE — ERROR LOG
+========================================
+
+Error Type    : prd_generator
+Timestamp     : 2026-04-17 09:33:59
+Agent/Module  : prd_generator
+Context       : Generating section: Analytics
+
+----------------------------------------
+ ERROR MESSAGE
+----------------------------------------
+Error code: 429 - {'error': {'message': 'Rate limit reached for model `llama-3.3-70b-versatile` in organization `org_01kp8vsa2ren5ahw8qkk0003qc` service tier `on_demand` on tokens per day (TPD): Limit 100000, Used 97618, Requested 3601. Please try again in 17m33.215999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}
+
+----------------------------------------
+ FULL TRACEBACK
+----------------------------------------
+Traceback (most recent call last):
+  File "/mount/src/mas/prd_engine.py", line 397, in _call_llm
+    response = self.groq_model.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}]
+    )
+  File "/home/adminuser/venv/lib/python3.14/site-packages/groq/resources/chat/completions.py", line 461, in create
+    return self._post(
+           ~~~~~~~~~~^
+        "/openai/v1/chat/completions",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<45 lines>...
+        stream_cls=Stream[ChatCompletionChunk],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/adminuser/venv/lib/python3.14/site-packages/groq/_base_client.py", line 1280, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/adminuser/venv/lib/python3.14/site-packages/groq/_base_client.py", line 1067, in request
+    raise self._make_status_error_from_response(err.response) from None
+groq.RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for model `llama-3.3-70b-versatile` in organization `org_01kp8vsa2ren5ahw8qkk0003qc` service tier `on_demand` on tokens per day (TPD): Limit 100000, Used 97618, Requested 3601. Please try again in 17m33.215999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}
+
+
+========================================
+ END OF ERROR LOG
+========================================
