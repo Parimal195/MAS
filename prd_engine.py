@@ -1,6 +1,6 @@
 """
 =============================================================================
- 🧠 PRD ENGINE — AUTONOMOUS MULTI-AGENT PRD SYSTEM (prd_engine.py)
+  PRD ENGINE — AUTONOMOUS MULTI-AGENT PRD SYSTEM (prd_engine.py)
 
  What this file does in plain English:
  This file is an entire AI product team packed into code. When you type a
@@ -95,7 +95,7 @@ except ImportError:
 
 
 # =============================================================================
-# 📦 DATA STRUCTURES
+#  DATA STRUCTURES
 # =============================================================================
 
 @dataclass
@@ -137,7 +137,7 @@ class PRDMemory:
     """
     Full state persistence across PRD iterations.
 
-    research_memory: Dict of query → results (cached, reusable)
+    research_memory: Dict of query -> results (cached, reusable)
     prd_state:       Current PRD sections dict
     section_history: List of all version changes
     version:         Current version number
@@ -184,7 +184,7 @@ class EngineeringReview:
 
 
 # =============================================================================
-# 🔴 ERROR LOGGER — Pushes error files to GitHub
+#  ERROR LOGGER — Pushes error files to GitHub
 # =============================================================================
 
 class GitHubErrorLogger:
@@ -252,7 +252,7 @@ Context       : {context or 'N/A'}
 
 
 # =============================================================================
-# 🤖 AGENT BASE CLASS
+#  AGENT BASE CLASS
 # =============================================================================
 
 class BaseAgent:
@@ -283,7 +283,7 @@ class BaseAgent:
             self.model_name = None
             self.groq_model = BaseAgent._groq_client
             self.using_groq = True
-            prd_logger.info(f"  ✅ {agent_name} → Groq (llama-3.3-70b-versatile)")
+            prd_logger.info(f"  ✅ {agent_name} -> Groq (llama-3.3-70b-versatile)")
         else:
             # Try Gemini first
             if BaseAgent._client is None:
@@ -293,7 +293,7 @@ class BaseAgent:
             self.model_name = preferred_models[0] if preferred_models else "gemini-2.0-flash"
             self.groq_model = None
             self.using_groq = False
-            prd_logger.info(f"  ✅ {agent_name} → Gemini ({self.model_name})")
+            prd_logger.info(f"  ✅ {agent_name} -> Gemini ({self.model_name})")
         
         self.agent_name = agent_name
         self.error_logger = error_logger
@@ -358,7 +358,7 @@ class BaseAgent:
                         self.groq_model = BaseAgent._groq_client
                         self.using_groq = True
                         self.client = None
-                        prd_logger.warning(f"  ⚠️ {self.agent_name} → Gemini quota exhausted! Switching ALL agents to Groq globally")
+                        prd_logger.warning(f"  ⚠️ {self.agent_name} -> Gemini quota exhausted! Switching ALL agents to Groq globally")
                         continue
                 
                 log_error(prd_logger, self.agent_name, error_str, f"Attempt {attempt+1}/{max_retries}")
@@ -414,7 +414,7 @@ class BaseAgent:
 
 class GodAgent(BaseAgent):
     """
-    🎯 THE GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
+     THE GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
 
     OBJECTIVE: Convert user input into a structured multi-agent execution plan
     for PRD generation or refinement.
@@ -425,13 +425,13 @@ class GodAgent(BaseAgent):
     3. Decide execution strategy: Full generation, Partial update, Iterative refinement
 
     DECISION LOGIC:
-    - New PRD: classifier → research → PRD (section loop + evaluator) → engineering_manager → vp_product
-    - PRD Update: gap_detector → research (incremental) → PRD update → engineering_manager → vp_product
-    - Weak PRD: regenerate weak sections → evaluator → engineering_manager → vp_product
+    - New PRD: classifier -> research -> PRD (section loop + evaluator) -> engineering_manager -> vp_product
+    - PRD Update: gap_detector -> research (incremental) -> PRD update -> engineering_manager -> vp_product
+    - Weak PRD: regenerate weak sections -> evaluator -> engineering_manager -> vp_product
 
     SYSTEM RULES:
     - NEVER skip research for new PRD
-    - ALWAYS enforce: 3 options → evaluator → selection
+    - ALWAYS enforce: 3 options -> evaluator -> selection
     - ALWAYS require engineering_manager before vp_product
     - ALWAYS prefer partial updates over full regeneration
     """
@@ -448,17 +448,17 @@ class GodAgent(BaseAgent):
         """Decide the workflow for initial PRD generation with smart section selection."""
         prompt = f"""You are the GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
 
-## 🎯 OBJECTIVE
+##  OBJECTIVE
 Convert user input into a structured multi-agent execution plan for PRD generation. You must analyze the input to understand WHAT product is being built and WHICH sections are needed.
 
-## 🧠 THINKING FRAMEWORK
+##  THINKING FRAMEWORK
 1. Analyze input: What product is being built? What domain/industry?
 2. Identify product type: streaming, e-commerce, social, productivity, AI/ML, fintech, healthcare, etc.
 3. Determine required sections: Some sections are universal, some are product-specific
 4. Identify intent: New PRD, PRD update, or Refinement
 5. Decide execution strategy
 
-## 📋 SECTION CATALOG (know when to use each)
+##  SECTION CATALOG (know when to use each)
 
 ### Core Sections (ALL products need these):
 - Problem Statement: What problem are we solving? Who has it? How painful?
@@ -488,23 +488,23 @@ Convert user input into a structured multi-agent execution plan for PRD generati
 - Compliance: For regulated industries (GDPR, HIPAA, SOC2)
 - etc.
 
-## 🔍 DECISION LOGIC
-- Streaming/Video platforms → Add Feed, Moderation, AI Design sections
-- E-commerce → Add Payments, Inventory, Logistics sections
-- Social platforms → Add Feed, Moderation, Notifications sections
-- AI/ML products → Add AI Design, Model Monitoring sections
-- Fintech → Add Payments, Compliance, Security sections
+##  DECISION LOGIC
+- Streaming/Video platforms -> Add Feed, Moderation, AI Design sections
+- E-commerce -> Add Payments, Inventory, Logistics sections
+- Social platforms -> Add Feed, Moderation, Notifications sections
+- AI/ML products -> Add AI Design, Model Monitoring sections
+- Fintech -> Add Payments, Compliance, Security sections
 
 ## ⚙️ SYSTEM RULES
 - NEVER skip research for new PRD
-- ALWAYS enforce: 3 options → evaluator → selection
+- ALWAYS enforce: 3 options -> evaluator -> selection
 - ALWAYS require engineering_manager before vp_product
 - ALWAYS prefer partial updates over full regeneration
 
 User input:
 "{user_input}"
 
-## 📤 OUTPUT (STRICT JSON)
+##  OUTPUT (STRICT JSON)
 {{
     "intent": "new_prd",
     "confidence": 0.0,
@@ -577,13 +577,13 @@ Respond with JSON only. Think carefully about which sections are needed based on
 
         prompt = f"""You are the GOD AGENT — an elite-level Head of Product + Chief of Staff + Systems Thinker.
 
-## 🎯 OBJECTIVE
+##  OBJECTIVE
 Analyze the user's update request and create an execution plan for PRD refinement.
 
-## 🧩 SYSTEM RULES
+##  SYSTEM RULES
 - ALWAYS prefer partial updates over full regeneration
 - ALWAYS require engineering_manager before vp_product
-- ALWAYS enforce: 3 options → evaluator → selection
+- ALWAYS enforce: 3 options -> evaluator -> selection
 
 The user previously built a PRD (v{memory.version}) with these sections:
 {current_prd_summary}
@@ -634,15 +634,15 @@ Decide what to do. Respond in STRICT JSON:
 
 class ClassifierAgent(BaseAgent):
     """
-    📋 CLASSIFIER AGENT
+     CLASSIFIER AGENT
 
     A high-precision intent classifier for product workflows.
 
     RULES:
-    - Pain → problem_statement
-    - Solution → idea
-    - Modification → prd_update
-    - Mixed → choose dominant intent
+    - Pain -> problem_statement
+    - Solution -> idea
+    - Modification -> prd_update
+    - Mixed -> choose dominant intent
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -657,22 +657,22 @@ class ClassifierAgent(BaseAgent):
         """Classify user input as idea, problem statement, or prd_update."""
         prompt = f"""You are a high-precision intent classifier for product workflows.
 
-## 🎯 TASK
+##  TASK
 Classify input into:
 - idea
 - problem_statement
 - prd_update
 
-## 🧠 RULES
-- Pain → problem_statement
-- Solution → idea
-- Modification → prd_update
-- Mixed → choose dominant intent
+##  RULES
+- Pain -> problem_statement
+- Solution -> idea
+- Modification -> prd_update
+- Mixed -> choose dominant intent
 
 User input:
 "{user_input}"
 
-## 📤 OUTPUT
+##  OUTPUT
 {{
     "type": "idea|problem_statement|prd_update",
     "confidence": 0.0,
@@ -703,7 +703,7 @@ User input:
 
 class ResearchAgent(BaseAgent):
     """
-    🔬 RESEARCH AGENT — Elite product research analyst.
+     RESEARCH AGENT — Elite product research analyst.
 
     THINKING MODEL:
     - Market reality (size, maturity, behavior)
@@ -821,7 +821,7 @@ class ResearchAgent(BaseAgent):
                 # reports/ folder might not exist yet
                 pass
 
-            print(f"  📊 Found {len(insights)} Specter reports in GitHub repo")
+            print(f"   Found {len(insights)} Specter reports in GitHub repo")
             return insights
         except Exception as e:
             print(f"  ⚠️ Could not fetch Specter reports: {e}")
@@ -832,7 +832,7 @@ class ResearchAgent(BaseAgent):
         Conduct comprehensive research using Tavily + Google + Specter reports.
         Reuses cached results from memory when available.
         """
-        print("  🔬 Research Agent: Starting research phase...")
+        print("   Research Agent: Starting research phase...")
         research_data = {
             "results_by_query": {},
             "specter_reports": [],
@@ -847,7 +847,7 @@ class ResearchAgent(BaseAgent):
                 research_data["results_by_query"][query] = memory.research_memory[query]
                 continue
 
-            print(f"  🔍 Searching: '{query[:60]}...'")
+            print(f"   Searching: '{query[:60]}...'")
 
             # Fire BOTH search engines
             tavily_results = self._search_tavily(query)
@@ -855,7 +855,7 @@ class ResearchAgent(BaseAgent):
 
             # Combine and deduplicate
             combined = self._merge_and_deduplicate(tavily_results, google_results)
-            print(f"     → {len(tavily_results)} Tavily + {len(google_results)} Google = {len(combined)} unique results")
+            print(f"     -> {len(tavily_results)} Tavily + {len(google_results)} Google = {len(combined)} unique results")
 
             research_data["results_by_query"][query] = combined
             time.sleep(1)  # Politeness delay
@@ -883,10 +883,10 @@ class ResearchAgent(BaseAgent):
 
         prompt = f"""You are an elite product research analyst.
 
-## 🎯 TASK
+##  TASK
 Generate high-signal, actionable research.
 
-## 🧠 THINKING MODEL
+##  THINKING MODEL
 - Market reality (size, maturity, behavior)
 - Competitors (strategy, strengths, gaps)
 - User psychology (pain, motivation, behavior)
@@ -1017,10 +1017,10 @@ class PRDGeneratorAgent(BaseAgent):
 
         prompt = f"""You are a Senior Product Manager creating a detailed, production-ready PRD.
 
-## 🎯 TASK
+##  TASK
 Generate EXACTLY 3 distinct options for a PRD section. Each option should be comprehensive, actionable, and ready for engineering, design, and business teams.
 
-## 🧠 THINKING MODEL
+##  THINKING MODEL
 Option 1: Bold (high ambition, differentiated) - Maximum features, futuristic approach
 Option 2: Balanced (practical, scalable) - Right mix of ambition and feasibility  
 Option 3: MVP (lean, fast execution) - Minimum viable with clear path to scale
@@ -1051,7 +1051,7 @@ SECTION: {section}
 Generate exactly 3 complete, distinct options for this section.
 Label them clearly as "--- OPTION 1 ---", "--- OPTION 2 ---", "--- OPTION 3 ---".
 
-## 📤 OUTPUT FORMAT
+##  OUTPUT FORMAT
 Each option must be labeled and distinct. No repetition across options.
 Include:
 - Specific metrics and KPIs
@@ -1132,13 +1132,13 @@ This should be written at a level where even someone unfamiliar with streaming c
             "Objectives": """CRITICAL: Write SMART objectives. 
 
 Define quantifiable objectives:
-- PRIMARY GOALS: Top 3-5 goals with specific targets (e.g., "Enable frictionless clip creation" → "90% of users can create clip in <10 seconds")
+- PRIMARY GOALS: Top 3-5 goals with specific targets (e.g., "Enable frictionless clip creation" -> "90% of users can create clip in <10 seconds")
 - SECONDARY GOALS: Supporting objectives
 - Quantify with competitor benchmarks if available
 - Include 30/60/90 day targets where applicable
-- Format: Objective → Metric → Target → Timeline
+- Format: Objective -> Metric -> Target -> Timeline
 
-Example: "Drive viral distribution" → "Viral coefficient K > 1" → "K platform = 1.2" → "6 months"""",
+Example: "Drive viral distribution" -> "Viral coefficient K > 1" -> "K platform = 1.2" -> "6 months""",
 
             "Core Product Principles": """CRITICAL: Define fundamental rules that guide ALL product decisions.
 
@@ -1148,12 +1148,12 @@ These principles should be:
 - Universal (apply to all features)
 
 Examples from reference PRD:
-- Ownership → Streamer (always)
-- Attribution → Creator (viewer/streamer/uploader/AI)  
-- Discovery → Centralised under streamer
-- Safety → No clip goes live without moderation clearance
-- Consistency → Same lifecycle for all clip types
-- Low latency → Clip creation should feel instant
+- Ownership -> Streamer (always)
+- Attribution -> Creator (viewer/streamer/uploader/AI)  
+- Discovery -> Centralised under streamer
+- Safety -> No clip goes live without moderation clearance
+- Consistency -> Same lifecycle for all clip types
+- Low latency -> Clip creation should feel instant
 
 Each principle should have a one-line explanation of WHY it matters.""",
 
@@ -1206,7 +1206,7 @@ Use standard format like reference PRD:
 6.1 Live Clip Creation
 - Preconditions: Stream is live, Buffer available (min 90 sec)
 - Max clip duration: 90 sec, Min: 10 sec
-- Flow: User taps Clip → System captures last 90-sec buffer → Opens editor → User trims → User adds title/tags → User publishes OR shares
+- Flow: User taps Clip -> System captures last 90-sec buffer -> Opens editor -> User trims -> User adds title/tags -> User publishes OR shares
 
 Include all possible paths (success, failure, cancellation).""",
 
@@ -1326,7 +1326,7 @@ Define:
 
 Reference PRD format:
 - Clip creation rate: Number of clips created / Number of streams
-- Viral coefficient: (Total Shares / Total Active Users) × (Clicks / Shares) × (New Users / Clicks)""",
+- Viral coefficient: (Total Shares / Total Active Users) * (Clicks / Shares) * (New Users / Clicks)""",
 
             "Edge Cases": """CRITICAL: Exhaustive list of what could go wrong.
 
@@ -1343,8 +1343,8 @@ For each:
 - USER FEEDBACK: What does the user see
 
 Example:
-- Duplicate clips → Dedupe via hash → Show "similar clip exists" message
-- CDN failure → Fallback origin → Retry with original server""",
+- Duplicate clips -> Dedupe via hash -> Show "similar clip exists" message
+- CDN failure -> Fallback origin -> Retry with original server""",
 
             "Feed": """CRITICAL: For content platforms - how content is discovered.
 
@@ -1359,7 +1359,7 @@ Define:
 - GUARDRAILS: What should NEVER be shown
 
 Reference PRD has detailed formula for scoring:
-Score = (completion_rate × W_completion) + (share_rate × W_share) + (follow_rate × W_follow) - (skip_rate × W_skip)""",
+Score = (completion_rate * W_completion) + (share_rate * W_share) + (follow_rate * W_follow) - (skip_rate * W_skip)""",
 
             "Moderation & NSFW System": """CRITICAL: For UGC platforms - how content is reviewed.
 
@@ -1371,13 +1371,13 @@ Define:
 - EDGE CASES: Conflict resolution, escalations
 - NSFW SCORE: How to measure appropriateness
 
-Include flow: Content submitted → Auto-check → Score → Approve/Reject/Manual Review""",
+Include flow: Content submitted -> Auto-check -> Score -> Approve/Reject/Manual Review""",
 
             "AI Design for Clips": """CRITICAL: For AI/ML features - how the algorithm works.
 
 Define:
 - SIGNALS: What inputs does AI use (chat spikes, audio peaks, viewer spikes)
-- FORMULA: Exact scoring equation (e.g., Score = w1×chat + w2×audio + w3×viewers)
+- FORMULA: Exact scoring equation (e.g., Score = w1*chat + w2*audio + w3*viewers)
 - WEIGHTS: What are the weight values and why
 - OUTPUT: What does AI generate (top 5-10 clips, 30 sec clips)
 - PROCESSING: When does it run (stream end, periodic)
@@ -1400,8 +1400,8 @@ Define:
 Example:
 - Banner ads displayed on clips
 - Revenue split: 50% streamer, 50% platform
-- Creator deleted → revenue goes to streamer
-- Streamer banned → revenue frozen""",
+- Creator deleted -> revenue goes to streamer
+- Streamer banned -> revenue frozen""",
 
             "AI Design": """CRITICAL: For AI/ML products - detailed algorithm specification.
 
@@ -1422,63 +1422,6 @@ Assume the reader has ZERO knowledge about this product.
 - Include quantitative data where possible
 - Structure with headers, bullet points, and tables
 - Minimum 500 words""")
-- Secondary Goals (incentivize viewers to become contributors, use AI for auto-scaling)
-- Quantify with specific targets and timelines""",
-
-            "Core Product Principles": """Define fundamental principles that guide the product:
-- Ownership (who owns the content)
-- Attribution (who gets credit - viewer/streamer/uploader/AI)
-- Discovery (where clips are surfaced)
-- Safety (moderation requirements)
-- Consistency (lifecycle for all clip types)
-- Low latency (instant clip creation feel)""",
-
-            "Scope": """Define what's IN scope and OUT of scope:
-- 4.1 Clip Types (Live, VOD, Upload)
-- 4.2 Out of Scope (V1) - clip editing beyond trimming, advanced AI generation
-- Clear boundaries to prevent scope creep""",
-
-            "User Flows": """Create detailed user flows for each clip type:
-- 6.1 Live Clip Creation: Preconditions, buffer requirements (90 sec), max/min duration, trim range, layout options, title/tags/category, publish/share flows, failure handling
-- 6.2 VOD Clip Creation: Timeline selection, trim, publish
-- 6.3 Upload Clip Flow: Constraints (max 90sec, 200MB, formats MP4/MOV), validation, status flow (PENDING_PROCESSING -> Success)
-- Include step-by-step flows with all UI elements and decisions""",
-
-            "Feed": """Define feed behavior and discovery:
-- 7.1 Principle: acquisition and engagement first, discovery second
-- 7.2 Surface Rules by Platform: Desktop Web, Mobile App, External/Shared URL
-- Entry points, visibility thresholds, placement, layout, navigation, clip viewer behavior
-- 7.4 Suggested Clips Logic: Definitions (view, completion, skip, share), guardrails, supply gate, scoring formula, batch composition, fallback rules
-- 7.5 Queue State Management, 7.6 System Config, 7.7 Future Scope""",
-
-            "Moderation & NSFW System": """Define moderation approach:
-- 8.1 Automated Moderation: Inputs (video frames, audio, text, category), reuse existing NSFW model
-- 8.2 Manual Moderation (Retool): Required features (clip preview, metadata view, NSFW score, approve/reject/shadow ban), SLA (review within 30 mins)
-- Edge cases and conflict resolution""",
-
-            "Monetization": """Define revenue model (future scope):
-- 9.1 Revenue Sources: Banner ads
-- 9.2 Revenue Split: Creator vs platform
-- 9.3 Edge Cases: Creator deleted → revenue to streamer, Streamer banned → revenue frozen""",
-
-            "AI Design for Clips": """Define AI-driven clip generation:
-- 10.1 Signals: Chat spikes, audio peaks, viewer spikes
-- 10.2 Formula: Score = w1(chat) + w2(audio) + w3(viewers)
-- 10.3 Output: Top 5-10 clips per stream, 30 sec before and after timestamp
-- Include detailed algorithm and scoring weights""",
-
-            "Edge Cases": """Define exhaustive edge cases:
-- 11.1 Content: Duplicate clips (dedupe via hash), wrong streamer tagged (allow report)
-- 11.2 User: Creator banned → hide attribution, Streamer banned → remove clips
-- 11.3 System: Encoding failure (retry 3 times), CDN failure (fallback origin)
-- 11.4 Upload: Partial upload (retry), Corrupted file (reject)""",
-
-            "Analytics": """Define metrics and events:
-- Global metrics: Clip creation rate (Livestream vs VOD), Viral coefficient formula
-- Platform-level metrics: Views, likes, share, comments, New follow
-- Future scope: Detailed reports by category, country, top clips
-- Define calculation formulas explicitly""",
-        }
         return guides.get(section, f"Write detailed, specific content for the '{section}' section.")
 
     def _get_fallback(self, section: str, context: PRDContext) -> str:
@@ -1492,7 +1435,7 @@ Assume the reader has ZERO knowledge about this product.
 
 class EvaluatorAgent(BaseAgent):
     """
-    ⚖️ EVALUATOR AGENT — A ruthless VP of Product.
+    EVALUATOR AGENT - A ruthless VP of Product.
 
     SCORING DIMENSIONS (score each 1-5):
     - Clarity (15%)
@@ -1506,11 +1449,11 @@ class EvaluatorAgent(BaseAgent):
     - Penalize fluff heavily
     - Prefer execution-ready outputs
     - Reward specificity
-    - If all weak → pick best but highlight weakness
+- If all weak - pick best but highlight weakness
 
     CALCULATION:
-    Final Score = (Clarity × 0.15) + (Depth × 0.20) + (Actionability × 0.25) +
-                  (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
+    Final Score = (Clarity * 0.15) + (Depth * 0.20) + (Actionability * 0.25) +
+                  (User Focus * 0.15) + (Research Alignment * 0.15) + (Strategic Thinking * 0.10)
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -1527,7 +1470,7 @@ class EvaluatorAgent(BaseAgent):
 
         prompt = f"""You are a ruthless VP of Product.
 
-## 🎯 TASK
+##  TASK
 Evaluate and select the best option for the "{section}" section of a PRD.
 
 Product Context:
@@ -1537,8 +1480,8 @@ Product Context:
 OPTIONS:
 {options_text}
 
-## 🧠 SCORING DIMENSIONS
-Score each (1–5):
+##  SCORING DIMENSIONS
+Score each (1-5):
 - Clarity (15%)
 - Depth (20%)
 - Actionability (25%)
@@ -1546,16 +1489,16 @@ Score each (1–5):
 - Research Alignment (15%)
 - Strategic Thinking (10%)
 
-## 🧠 RULES
+##  RULES
 - Penalize fluff heavily
 - Prefer execution-ready outputs
 - Reward specificity
-- If all weak → pick best but highlight weakness
+- If all weak -> pick best but highlight weakness
 
-## 📊 CALCULATION
-Final Score = (Clarity × 0.15) + (Depth × 0.20) + (Actionability × 0.25) + (User Focus × 0.15) + (Research Alignment × 0.15) + (Strategic Thinking × 0.10)
+##  CALCULATION
+Final Score = (Clarity * 0.15) + (Depth * 0.20) + (Actionability * 0.25) + (User Focus * 0.15) + (Research Alignment * 0.15) + (Strategic Thinking * 0.10)
 
-## 📤 OUTPUT
+##  OUTPUT
 {{
     "scores": [
         {{
@@ -1590,7 +1533,7 @@ Final Score = (Clarity × 0.15) + (Depth × 0.20) + (Actionability × 0.25) + (U
 
 class GapDetectorAgent(BaseAgent):
     """
-    🔍 GAP DETECTOR AGENT — Precision PRD gap detector.
+     GAP DETECTOR AGENT - Precision PRD gap detector.
 
     CHECK:
     - Missing sections
@@ -1613,10 +1556,10 @@ class GapDetectorAgent(BaseAgent):
         """Analyze PRD and new input to find gaps."""
         prompt = f"""You are a precision PRD gap detector.
 
-## 🎯 TASK
+##  TASK
 Identify missing or weak areas.
 
-## 🧠 CHECK
+##  CHECK
 - Missing sections
 - Weak logic
 - Undefined flows
@@ -1629,7 +1572,7 @@ CURRENT PRD:
 {"NEW USER INPUT: " + new_user_input if new_user_input else ""}
 {"PRODUCT CONTEXT: " + context.idea if context else ""}
 
-## 📤 OUTPUT
+##  OUTPUT
 {{
     "missing_sections": ["list of topics/sections completely absent"],
     "weak_sections": ["list of sections with weak content"],
@@ -1658,7 +1601,7 @@ CURRENT PRD:
 
 class EngineeringManagerAgent(BaseAgent):
     """
-    🏗️ ENGINEERING MANAGER AGENT — Senior Engineering Manager.
+    ️ ENGINEERING MANAGER AGENT — Senior Engineering Manager.
 
     TASK: Validate PRD for technical completeness and scalability.
 
@@ -1669,7 +1612,7 @@ class EngineeringManagerAgent(BaseAgent):
     - Scalability risks
     - UI/UX feasibility
 
-    RULE: If ANY critical gap exists → reject
+    RULE: If ANY critical gap exists -> reject
     """
 
     def __init__(self, gemini_api_key: str, error_logger: GitHubErrorLogger = None):
@@ -1684,10 +1627,10 @@ class EngineeringManagerAgent(BaseAgent):
         """Review entire PRD from engineering perspective."""
         prompt = f"""You are a senior Engineering Manager.
 
-## 🎯 TASK
+##  TASK
 Validate PRD for technical completeness and scalability.
 
-## 🧠 CHECK
+##  CHECK
 - System design completeness
 - APIs and data flow
 - Edge cases and failures
@@ -1695,7 +1638,7 @@ Validate PRD for technical completeness and scalability.
 - UI/UX feasibility
 
 ## ⚠️ RULE
-If ANY critical gap exists → reject (set status to "needs_changes")
+If ANY critical gap exists -> reject (set status to "needs_changes")
 
 PRODUCT: {context.idea}
 PROBLEM: {context.problem_statement}
@@ -1703,7 +1646,7 @@ PROBLEM: {context.problem_statement}
 PRD CONTENT:
 {prd_content[:6000]}
 
-## 📤 OUTPUT
+##  OUTPUT
 {{
     "status": "approved | needs_changes",
     "approved": true|false,
@@ -1739,7 +1682,7 @@ PRD CONTENT:
 
 class VPProductAgent(BaseAgent):
     """
-    👔 VP PRODUCT AGENT — VP of Product responsible for final approval.
+     VP PRODUCT AGENT — VP of Product responsible for final approval.
 
     TASK: Evaluate PRD from a business and strategic perspective.
 
@@ -1768,10 +1711,10 @@ class VPProductAgent(BaseAgent):
 
         prompt = f"""You are a VP of Product responsible for final approval.
 
-## 🎯 TASK
+##  TASK
 Evaluate PRD from a business and strategic perspective.
 
-## 🧠 CHECK
+##  CHECK
 - Market viability
 - Competitive advantage
 - Monetization logic
@@ -1799,7 +1742,7 @@ A: [Detailed analysis]
 
 [Continue with all identified gaps]
 
-## 📤 Final Output
+##  Final Output
 Also provide a structured JSON block:
 {{
     "edge_cases": ["list of edge cases identified"],
@@ -1828,7 +1771,7 @@ Also provide a structured JSON block:
 
 
 # =============================================================================
-# 🎼 PRD ORCHESTRATOR — Coordinates Everything
+#  PRD ORCHESTRATOR — Coordinates Everything
 # =============================================================================
 
 class PRDOrchestrator:
@@ -1851,7 +1794,7 @@ class PRDOrchestrator:
         self.error_logger = GitHubErrorLogger(github_pat, github_repo)
 
         prd_logger.info("=" * 50)
-        prd_logger.info("🧠 Initializing PRD Engine — 7 Agent System")
+        prd_logger.info(" Initializing PRD Engine — 7 Agent System")
         prd_logger.info("=" * 50)
         
         # Initialize all 7 agents
@@ -1883,7 +1826,7 @@ class PRDOrchestrator:
 
         Returns: (success, docx_path, status_message, memory)
         """
-        prd_logger.info(f"🚀 Starting PRD generation for: {user_input[:100]}...")
+        prd_logger.info(f" Starting PRD generation for: {user_input[:100]}...")
         
         try:
             if memory is None:
@@ -1891,15 +1834,15 @@ class PRDOrchestrator:
             memory.user_inputs.append(user_input)
 
             # ---- STEP 1: God Agent plans workflow ----
-            self._progress(progress_callback, "🎯 God Agent: Planning workflow...")
-            prd_logger.info("🎯 God Agent: Planning workflow...")
+            self._progress(progress_callback, " God Agent: Planning workflow...")
+            prd_logger.info(" God Agent: Planning workflow...")
             log_agent_start(prd_logger, "GodAgent", "Initial planning")
             god_plan = self.god_agent.plan_initial_workflow(user_input)
             log_agent_end(prd_logger, "GodAgent", "COMPLETE")
 
             # ---- STEP 2: Classifier Agent ----
-            self._progress(progress_callback, "📋 Classifier Agent: Analyzing input type...")
-            prd_logger.info("📋 Classifier Agent: Analyzing input type...")
+            self._progress(progress_callback, " Classifier Agent: Analyzing input type...")
+            prd_logger.info(" Classifier Agent: Analyzing input type...")
             log_agent_start(prd_logger, "ClassifierAgent", "Classify input")
             context = self.classifier.classify(user_input)
             memory.context = context
@@ -1907,8 +1850,8 @@ class PRDOrchestrator:
             log_agent_end(prd_logger, "ClassifierAgent", "COMPLETE")
 
             # ---- STEP 3: Research Agent ----
-            self._progress(progress_callback, "🔬 Research Agent: Searching Tavily + Google + Specter reports...")
-            prd_logger.info("🔬 Research Agent: Searching...")
+            self._progress(progress_callback, " Research Agent: Searching Tavily + Google + Specter reports...")
+            prd_logger.info(" Research Agent: Searching...")
             log_agent_start(prd_logger, "ResearchAgent", "Research")
             queries = god_plan.get("research_queries", [
                 f"market analysis {context.idea}",
@@ -1929,7 +1872,7 @@ class PRDOrchestrator:
             
             # Dynamically determine sections based on product type
             sections_to_generate = PRDGeneratorAgent.get_sections_for_product(god_plan)
-            prd_logger.info(f"📋 Sections to generate: {sections_to_generate}")
+            prd_logger.info(f" Sections to generate: {sections_to_generate}")
             prd_sections = {}
             total_sections = len(sections_to_generate)
 
@@ -1971,7 +1914,7 @@ class PRDOrchestrator:
             for loop in range(self.MAX_ENG_LOOPS):
                 self._progress(
                     progress_callback,
-                    f"🏗️ Engineering Manager: Technical review (pass {loop+1})..."
+                    f"️ Engineering Manager: Technical review (pass {loop+1})..."
                 )
                 eng_review = self.eng_manager.review(prd_md, context)
                 memory.engineering_review = asdict(eng_review) if hasattr(eng_review, '__dataclass_fields__') else {"raw": str(eng_review)}
@@ -1984,7 +1927,7 @@ class PRDOrchestrator:
                 if eng_review.feedback_for_sections:
                     self._progress(
                         progress_callback,
-                        f"🔄 Re-generating {len(eng_review.feedback_for_sections)} sections based on engineering feedback..."
+                        f" Re-generating {len(eng_review.feedback_for_sections)} sections based on engineering feedback..."
                     )
                     for sec_name, feedback in eng_review.feedback_for_sections.items():
                         if sec_name in prd_sections:
@@ -2005,12 +1948,12 @@ class PRDOrchestrator:
                     break
 
             # ---- STEP 6: VP Product Review ----
-            self._progress(progress_callback, "👔 VP Product: Final executive review...")
+            self._progress(progress_callback, " VP Product: Final executive review...")
             vp_review = self.vp_product.review(prd_md, context, eng_review)
             memory.vp_review = vp_review
 
             # ---- STEP 7: Generate Documents ----
-            self._progress(progress_callback, "📄 Generating PRD documents...")
+            self._progress(progress_callback, " Generating PRD documents...")
             docx_path = self._generate_docx(memory, eng_review, vp_review)
 
             # Push to GitHub
@@ -2021,8 +1964,8 @@ class PRDOrchestrator:
 
             memory.version = 1
             success_msg = f"PRD v{memory.version} generated successfully!{github_msg}"
-            self._progress(progress_callback, f"🎉 {success_msg}")
-            prd_logger.info(f"🎉 PRD generation complete: {success_msg}")
+            self._progress(progress_callback, f" {success_msg}")
+            prd_logger.info(f" PRD generation complete: {success_msg}")
 
             return True, docx_path, success_msg, memory
 
@@ -2056,7 +1999,7 @@ class PRDOrchestrator:
             context = memory.context
 
             # ---- STEP 1: God Agent interprets the update ----
-            self._progress(progress_callback, "🎯 God Agent: Interpreting your update...")
+            self._progress(progress_callback, " God Agent: Interpreting your update...")
             update_plan = self.god_agent.interpret_update(new_input, memory)
 
             affected = update_plan.get("affected_sections", [])
@@ -2064,14 +2007,14 @@ class PRDOrchestrator:
                 affected = [specific_section]
 
             # ---- STEP 2: Gap Detection ----
-            self._progress(progress_callback, "🔍 Gap Detector: Scanning for missing pieces...")
+            self._progress(progress_callback, " Gap Detector: Scanning for missing pieces...")
             prd_md = memory.get_prd_markdown()
             gap_report = self.gap_detector.detect_gaps(prd_md, new_input, context)
 
             # ---- STEP 3: Incremental Research (if needed) ----
             research_data = context.research_data or {}
             if update_plan.get("new_research_needed", False):
-                self._progress(progress_callback, "🔬 Research Agent: Incremental research (reusing cache)...")
+                self._progress(progress_callback, " Research Agent: Incremental research (reusing cache)...")
                 new_queries = update_plan.get("research_queries", [f"research: {new_input}"])
                 new_research = self.researcher.research(new_queries, memory)
                 memory.research_memory.update(new_research.get("results_by_query", {}))
@@ -2106,11 +2049,11 @@ class PRDOrchestrator:
 
             # ---- STEP 5: Engineering Manager Review ----
             prd_md = memory.get_prd_markdown()
-            self._progress(progress_callback, "🏗️ Engineering Manager: Reviewing updates...")
+            self._progress(progress_callback, "️ Engineering Manager: Reviewing updates...")
             eng_review = self.eng_manager.review(prd_md, context)
 
             if not eng_review.approved and eng_review.feedback_for_sections:
-                self._progress(progress_callback, "🔄 Addressing engineering feedback...")
+                self._progress(progress_callback, " Addressing engineering feedback...")
                 for sec_name, feedback in eng_review.feedback_for_sections.items():
                     if sec_name in memory.prd_state:
                         options = self.generator.generate_section(
@@ -2125,12 +2068,12 @@ class PRDOrchestrator:
 
             # ---- STEP 6: VP Product Review ----
             prd_md = memory.get_prd_markdown()
-            self._progress(progress_callback, "👔 VP Product: Reviewing updates...")
+            self._progress(progress_callback, " VP Product: Reviewing updates...")
             vp_review = self.vp_product.review(prd_md, context, eng_review)
             memory.vp_review = vp_review
 
             # ---- STEP 7: Generate Updated Documents ----
-            self._progress(progress_callback, "📄 Generating updated PRD documents...")
+            self._progress(progress_callback, " Generating updated PRD documents...")
             memory.version += 1
             docx_path = self._generate_docx(memory, eng_review, vp_review)
 
@@ -2140,7 +2083,7 @@ class PRDOrchestrator:
                     github_msg = " (Pushed to GitHub)"
 
             success_msg = f"PRD v{memory.version} refined successfully!{github_msg}"
-            self._progress(progress_callback, f"🎉 {success_msg}")
+            self._progress(progress_callback, f" {success_msg}")
 
             return True, docx_path, success_msg, memory
 
@@ -2220,7 +2163,7 @@ class PRDOrchestrator:
                         for issue in parsed["issues"]:
                             doc.add_paragraph(
                                 f"[{issue.get('severity', 'info').upper()}] {issue.get('section', '')}: "
-                                f"{issue.get('issue', '')} → {issue.get('recommendation', '')}",
+                                f"{issue.get('issue', '')} -> {issue.get('recommendation', '')}",
                                 style="List Bullet"
                             )
                     approval_status = "✅ Approved" if parsed.get("approved") else "⚠️ Conditional"
@@ -2247,7 +2190,7 @@ class PRDOrchestrator:
         filepath = os.path.join("reports", filename)
         os.makedirs("reports", exist_ok=True)
         doc.save(filepath)
-        print(f"  📄 DOCX saved: {filepath}")
+        print(f"   DOCX saved: {filepath}")
         return filepath
 
     def _save_markdown(self, memory: PRDMemory) -> str:
