@@ -77,6 +77,20 @@ def get_claude_client() -> Anthropic:
         raise ValueError("ANTHROPIC_API_KEY not set")
     return Anthropic(api_key=api_key)
 
+OPENAI_AVAILABLE = False
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    print("⚠️ openai package not installed — OpenAI fallback disabled")
+
+def get_openai_client():
+    from openai import OpenAI
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not set")
+    return OpenAI(api_key=api_key)
+
 # Optional imports with graceful fallback
 try:
     from tavily import TavilyClient
@@ -275,8 +289,10 @@ class BaseAgent:
     _client = None  # Shared Gemini client
     _groq_client = None  # Shared Groq client
     _claude_client = None  # Shared Claude client
+    _openai_client = None  # Shared OpenAI client
     _use_groq_global = False  # Global flag - once set, all agents use Groq
     _use_claude_global = False  # Global flag - once set, all agents use Claude
+    _use_openai_global = False  # Global flag - once set, all agents use OpenAI
     _quota_checked = False  # Track if quota check was done
     
     def __init__(self, gemini_api_key: str, preferred_models: List[str],
@@ -379,7 +395,7 @@ class BaseAgent:
         """Call the LLM - uses global provider setting."""
         log_agent_start(prd_logger, self.agent_name, f"LLM call: {context[:50] if context else 'prompt'}")
         
-        for attempt in range(max_retries):
+        for attempt in range(2):  # Reduced from 4 to 2 retries
             try:
                 if self.using_claude and self.claude_model:
                     log_api_call(prd_logger, "Claude", "messages.create", "CALL", f"Attempt {attempt+1}")
@@ -933,10 +949,17 @@ class ResearchAgent(BaseAgent):
 
             print(f"   Searching: '{query[:60]}...'")
 
-            # Fire BOTH search engines
+            # Fire ONLY Tavily search (skip Google to save API calls)
             tavily_results = self._search_tavily(query)
-            google_results = self._search_google(query)
-
+            
+            # Optionally call Google if available
+            google_results = []
+            if self.google_api_key and self.google_cx:
+                try:
+                    google_results = self._search_google(query)
+                except:
+                    pass
+            
             # Combine and deduplicate
             combined = self._merge_and_deduplicate(tavily_results, google_results)
             print(f"     -> {len(tavily_results)} Tavily + {len(google_results)} Google = {len(combined)} unique results")
@@ -1993,52 +2016,11 @@ class PRDOrchestrator:
             memory.prd_state = prd_sections
             prd_logger.info(f"✅ All {total_sections} PRD sections generated")
 
-            # ---- STEP 5: Engineering Manager Review (with re-loop) ----
-            prd_md = memory.get_prd_markdown()
-            for loop in range(self.MAX_ENG_LOOPS):
-                self._progress(
-                    progress_callback,
-                    f"️ Engineering Manager: Technical review (pass {loop+1})..."
-                )
-                eng_review = self.eng_manager.review(prd_md, context)
-                memory.engineering_review = asdict(eng_review) if hasattr(eng_review, '__dataclass_fields__') else {"raw": str(eng_review)}
-
-                if eng_review.approved:
-                    self._progress(progress_callback, "✅ Engineering Manager: Approved!")
-                    break
-
-                # Re-generate affected sections
-                if eng_review.feedback_for_sections:
-                    self._progress(
-                        progress_callback,
-                        f" Re-generating {len(eng_review.feedback_for_sections)} sections based on engineering feedback..."
-                    )
-                    for sec_name, feedback in eng_review.feedback_for_sections.items():
-                        if sec_name in prd_sections:
-                            new_options = self.generator.generate_section(
-                                sec_name, context,
-                                research_data.get("summary", ""),
-                                god_plan,
-                                engineering_feedback=feedback
-                            )
-                            new_selected, new_rationale = self.evaluator.select_best(
-                                sec_name, new_options, context
-                            )
-                            prd_sections[sec_name].update(new_selected, new_rationale)
-                            time.sleep(1)
-
-                    prd_md = memory.get_prd_markdown()
-                else:
-                    break
-
-            # ---- STEP 6: VP Product Review ----
-            self._progress(progress_callback, " VP Product: Final executive review...")
-            vp_review = self.vp_product.review(prd_md, context, eng_review)
-            memory.vp_review = vp_review
-
-            # ---- STEP 7: Generate Documents ----
+            # ---- STEP 5: Generate Documents ----
             self._progress(progress_callback, " Generating PRD documents...")
-            docx_path = self._generate_docx(memory, eng_review, vp_review)
+            docx_path = self._generate_docx(memory, None, None)
+            memory.engineering_review = {}
+            memory.vp_review = {}
 
             # Push to GitHub
             github_msg = ""
