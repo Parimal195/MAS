@@ -1,4 +1,4 @@
-﻿"""
+"""
 =============================================================================
  🎛️ THE DASHBOARD WEBSITE (app.py)
 
@@ -34,8 +34,8 @@ if Path(".env").exists():
     for key, value in env_vars.items():
         if value:
             os.environ[key] = value
-elif Path(".env.example").exists():
-    st.warning("⚠️ Please copy .env.example to .env and add your API keys!")
+elif Path(".env.example").exists() and not os.environ.get("GEMINI_API_KEY"):
+    st.warning("⚠️ Please copy .env.example to .env and add your API keys (or add them to Streamlit Cloud Secrets)!")
 
 from github import Github
 from streamintel_agent import StreamIntelAgent
