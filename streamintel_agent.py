@@ -22,7 +22,11 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 from tavily import TavilyClient
-from duckduckgo_search import DDGS
+try:
+    from duckduckgo_search import DDGS
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
 
 class StreamIntelAgent:
     def __init__(self, api_key: str, tavily_api_key: str = None):
@@ -51,6 +55,8 @@ class StreamIntelAgent:
         return results
 
     def _search_duckduckgo(self, query: str, max_results=5) -> str:
+        if not DDGS_AVAILABLE:
+            return "Error: duckduckgo-search package not installed. Please use Tavily engine."
         results = ""
         try:
             with DDGS() as ddgs:
