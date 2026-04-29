@@ -17,6 +17,9 @@
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="SPECTER | STREAMINTEL", page_icon="👁️", layout="wide")
+
 import os
 import json
 import pytz
@@ -46,7 +49,6 @@ from email_utils import send_report_email
 from prd_engine import PRDOrchestrator
 from logger_config import prd_logger
 
-st.set_page_config(page_title="SPECTER | STREAMINTEL", page_icon="👁️", layout="wide")
 
 # Add system styling
 st.markdown("""
