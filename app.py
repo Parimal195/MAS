@@ -1,4 +1,4 @@
-"""
+﻿"""
 =============================================================================
  🎛️ THE DASHBOARD WEBSITE (app.py)
 
@@ -818,6 +818,7 @@ with tab_prd:
         🔄 **Iterative:** Use "Refine PRD" to add requirements —
         only affected sections get regenerated, saving time and cost.
         """)
+
 
 
 
