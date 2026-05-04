@@ -1,0 +1,53 @@
+name: Daily Slack Reporter Sweep
+
+on:
+  schedule:
+    # Runs at 11:00 AM IST (5:30 AM UTC) every day
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    # Allows manual runs from the Actions tab
+
+permissions:
+  contents: write # Needed to commit the state file back to the repository
+
+jobs:
+  run-slack-agent:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Matches the ecosystem
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config python3-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute Slack Reporter Agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        run: |
+          python run_slack_agent.py
+
+      - name: Commit and Push State File
+        run: |
+          git config --local user.email "specter-agent@github.actions"
+          git config --local user.name "Specter Intelligence Agent"
+          git add reports/slack_state.json
+          # If there are no changes, this will just gracefully exit instead of failing
+          git commit -m "chore: update slack reporter state" || echo "No state updates to commit."
+          git push

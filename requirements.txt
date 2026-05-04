@@ -13,3 +13,5 @@ PyGithub
 pytz
 python-docx
 requests
+
+slack_sdk
