@@ -2,22 +2,22 @@ import os
 import re
 import json
 import time
+import requests
 from datetime import datetime
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
 from google import genai
-from google.genai import types
+
 
 class SlackReporterAgent:
-    def __init__(self, slack_token, channel_id, gemini_api_key):
-        self.slack_client = WebClient(token=slack_token)
-        self.channel_id = channel_id
+    GITHUB_REPORT_BASE_URL = "https://github.com/Parimal195/MAS/blob/main/reports"
+
+    def __init__(self, webhook_url, gemini_api_key):
+        self.webhook_url = webhook_url
         self.genai_client = genai.Client(api_key=gemini_api_key)
-        
+
         self.reports_dir = "reports"
         self.state_file = os.path.join(self.reports_dir, "slack_state.json")
-        self.report_pattern = re.compile(r"^report-\d{2}-\d{2}-\d{2}\.pdf$")
-        
+
+    # ------------------------------------------------------------------ state
     def _load_state(self):
         if os.path.exists(self.state_file):
             try:
@@ -26,7 +26,7 @@ class SlackReporterAgent:
             except Exception as e:
                 print(f"[SlackReporter] Error loading state: {e}")
         return {"sent_reports": []}
-        
+
     def _save_state(self, state):
         os.makedirs(self.reports_dir, exist_ok=True)
         try:
@@ -35,29 +35,27 @@ class SlackReporterAgent:
         except Exception as e:
             print(f"[SlackReporter] Error saving state: {e}")
 
-    def _get_unsent_reports(self):
-        if not os.path.exists(self.reports_dir):
-            print(f"[SlackReporter] Reports directory {self.reports_dir} does not exist.")
-            return []
-            
-        state = self._load_state()
-        sent_reports = set(state.get("sent_reports", []))
-        
-        unsent = []
-        for filename in os.listdir(self.reports_dir):
-            if self.report_pattern.match(filename) and filename not in sent_reports:
-                unsent.append(os.path.join(self.reports_dir, filename))
-                
-        # Sort by creation time so we process oldest unsent first
-        unsent.sort(key=lambda x: os.path.getctime(x))
-        return unsent
+    # --------------------------------------------------------- report helpers
+    def _get_today_report_filename(self):
+        """Construct the report filename for today in dd-mm-yy format."""
+        return datetime.now().strftime("report-%d-%m-%y.pdf")
 
+    def _report_exists(self, filename):
+        """Check if the report file exists locally."""
+        path = os.path.join(self.reports_dir, filename)
+        return os.path.isfile(path)
+
+    def _get_github_url(self, filename):
+        """Build the GitHub URL for a given report filename."""
+        return f"{self.GITHUB_REPORT_BASE_URL}/{filename}"
+
+    # -------------------------------------------------------- Gemini summary
     def _summarize_pdf(self, pdf_path):
         print(f"[SlackReporter] Summarizing {pdf_path} using Gemini API...")
         try:
             # Upload the file to Gemini
             uploaded_file = self.genai_client.files.upload(file=pdf_path)
-            
+
             # Wait for file to be processed
             retries = 10
             while retries > 0:
@@ -70,70 +68,122 @@ class SlackReporterAgent:
                 print(".", end="", flush=True)
                 time.sleep(2)
                 retries -= 1
-                
+
             prompt = "Please provide a concise 3-5 line summary of this intelligence report. Focus on the main findings."
-            
+
             response = self.genai_client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=[uploaded_file, prompt]
             )
-            
+
             # Clean up the file
             self.genai_client.files.delete(name=uploaded_file.name)
-            
+
             return response.text.strip()
         except Exception as e:
             print(f"[SlackReporter] Error summarizing PDF: {e}")
             return "Summary unavailable due to an error during analysis."
 
-    def _send_to_slack(self, pdf_path, filename, summary):
-        print(f"[SlackReporter] Sending {filename} to Slack...")
+    # ---------------------------------------------------- Slack webhook send
+    def _send_to_slack(self, filename, github_url, summary):
+        """Send a rich message to Slack via Incoming Webhook."""
+        print(f"[SlackReporter] Sending {filename} to Slack via webhook...")
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             title = filename.replace(".pdf", "").replace("-", " ").title()
-            
-            # Modern Slack SDK uses WebClient.files_upload_v2 for file uploads
-            message = f"*{title}*\n*Generated at:* {timestamp}\n\n*Summary:*\n{summary}"
-            
-            response = self.slack_client.files_upload_v2(
-                channel=self.channel_id,
-                file=pdf_path,
-                title=title,
-                initial_comment=message
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            payload = {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"📄 {title}",
+                            "emoji": True
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Generated at:* {timestamp}"
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Summary:*\n{summary}"
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"📎 *<{github_url}|View Full Report on GitHub>*"
+                        }
+                    }
+                ]
+            }
+
+            response = requests.post(
+                self.webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10
             )
-            return True
-        except SlackApiError as e:
-            print(f"[SlackReporter] Slack API Error: {e.response['error']}")
+
+            if response.status_code == 200 and response.text == "ok":
+                return True
+            else:
+                print(f"[SlackReporter] Webhook returned: {response.status_code} – {response.text}")
+                return False
+
+        except requests.exceptions.RequestException as e:
+            print(f"[SlackReporter] Network error sending to Slack: {e}")
             return False
         except Exception as e:
             print(f"[SlackReporter] Unexpected error sending to Slack: {e}")
             return False
 
+    # ------------------------------------------------------------------- run
     def run(self):
         print("[SlackReporter] Starting agent run...")
-        unsent_reports = self._get_unsent_reports()
-        
-        if not unsent_reports:
-            print("[SlackReporter] No new reports to send.")
+
+        filename = self._get_today_report_filename()
+        print(f"[SlackReporter] Looking for today's report: {filename}")
+
+        if not self._report_exists(filename):
+            print(f"[SlackReporter] Today's report ({filename}) does not exist yet. Nothing to send.")
             return
-            
-        print(f"[SlackReporter] Found {len(unsent_reports)} new report(s).")
-        
+
+        # Check if already sent
         state = self._load_state()
         sent_reports = set(state.get("sent_reports", []))
-        
-        for pdf_path in unsent_reports:
-            filename = os.path.basename(pdf_path)
-            summary = self._summarize_pdf(pdf_path)
-            
-            success = self._send_to_slack(pdf_path, filename, summary)
-            
-            if success:
-                print(f"[SlackReporter] Successfully sent {filename}")
-                sent_reports.add(filename)
-                state["sent_reports"] = list(sent_reports)
-                self._save_state(state)
-            else:
-                print(f"[SlackReporter] Failed to send {filename}. Will retry next time.")
-                
+
+        if filename in sent_reports:
+            print(f"[SlackReporter] Today's report ({filename}) was already sent. Skipping.")
+            return
+
+        # Summarize and send
+        pdf_path = os.path.join(self.reports_dir, filename)
+        summary = self._summarize_pdf(pdf_path)
+        github_url = self._get_github_url(filename)
+
+        success = self._send_to_slack(filename, github_url, summary)
+
+        if success:
+            print(f"[SlackReporter] Successfully sent {filename}")
+            sent_reports.add(filename)
+            state["sent_reports"] = list(sent_reports)
+            self._save_state(state)
+        else:
+            print(f"[SlackReporter] Failed to send {filename}. Will retry next time.")
+
         print("[SlackReporter] Run completed.")

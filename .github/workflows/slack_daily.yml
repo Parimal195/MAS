@@ -38,8 +38,7 @@ jobs:
       - name: Execute Slack Reporter Agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           python run_slack_agent.py
 
