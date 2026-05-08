@@ -13,3 +13,4 @@ PyGithub
 pytz
 python-docx
 requests
+pypdf

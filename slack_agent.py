@@ -51,38 +51,49 @@ class SlackReporterAgent:
 
     # -------------------------------------------------------- Gemini summary
     def _summarize_pdf(self, pdf_path):
-        print(f"[SlackReporter] Summarizing {pdf_path} using Gemini API...")
+        print(f"[SlackReporter] Extracting summary from {pdf_path}...")
         try:
-            # Upload the file to Gemini
-            uploaded_file = self.genai_client.files.upload(file=pdf_path)
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            text = ""
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text += extracted + "\n"
 
-            # Wait for file to be processed
-            retries = 10
-            while retries > 0:
-                file_info = self.genai_client.files.get(name=uploaded_file.name)
-                if file_info.state.name == "ACTIVE":
-                    break
-                elif file_info.state.name == "FAILED":
-                    print(f"[SlackReporter] Failed to process document: {pdf_path}")
-                    return "Summary unavailable (document processing failed)."
-                print(".", end="", flush=True)
-                time.sleep(2)
-                retries -= 1
-
-            prompt = "Please provide a concise 3-5 line summary of this intelligence report. Focus on the main findings."
-
-            response = self.genai_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[uploaded_file, prompt]
-            )
-
-            # Clean up the file
-            self.genai_client.files.delete(name=uploaded_file.name)
-
-            return response.text.strip()
+            # Look for the Trend summary or general summary section
+            # The prompt asks for: "Trend summary (macro shifts)"
+            import re
+            
+            # Attempt to find the Trend Summary or Summary heading and capture the following text
+            # until the next major heading (which typically starts with a capital letter and has a colon or is a number)
+            # We use a non-greedy match until the end of the string or another possible heading
+            match = re.search(r'(?i)(?:Trend Summary|Macro Shifts).*?\n(.*?)(?=\n[A-Z0-9].*?:|\n#|\Z)', text, re.DOTALL)
+            
+            if match and match.group(1).strip():
+                summary_text = match.group(1).strip()
+                # Clean up lines
+                lines = [line.strip() for line in summary_text.split('\n') if line.strip()]
+                extracted_summary = " ".join(lines)
+                if len(extracted_summary) > 500:
+                    extracted_summary = extracted_summary[:497] + "..."
+                return extracted_summary
+                
+            # If no specific Trend Summary is found, just grab the first few meaningful lines after the title
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            # Skip the first line assuming it's the title/date
+            if len(lines) > 1:
+                extracted_summary = " ".join(lines[1:6])
+            else:
+                extracted_summary = " ".join(lines)
+                
+            if len(extracted_summary) > 500:
+                extracted_summary = extracted_summary[:497] + "..."
+            return extracted_summary
+            
         except Exception as e:
-            print(f"[SlackReporter] Error summarizing PDF: {e}")
-            return "Summary unavailable due to an error during analysis."
+            print(f"[SlackReporter] Error reading PDF: {e}")
+            return "Summary unavailable due to an error reading the PDF."
 
     # ---------------------------------------------------- Slack webhook send
     def _send_to_slack(self, filename, github_url, summary):
